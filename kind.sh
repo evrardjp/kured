@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 set -o errexit
 ###############
@@ -44,7 +44,7 @@ cleanup_tmpfiles() {
 
 teardown_kindcluster() {
 	echo "Tearing down the kind cluster $KIND_CLUSTER_NAME"
-	kind delete cluster --name $KIND_CLUSTER_NAME
+	kind delete cluster --name "$KIND_CLUSTER_NAME"
 }
 
 cleanup() {
@@ -54,14 +54,14 @@ cleanup() {
 		teardown_kindcluster
         else
 		echo "Gathering cluster logs"
-		kind export logs $tmp_dir/logs --name $KIND_CLUSTER_NAME
+		kind export logs "$tmp_dir/logs" --name "$KIND_CLUSTER_NAME"
         fi
 }
 
 retry() {
 	set +o errexit
 	local -r -i max_attempts="$1"; shift
-	local -r cmd="$@"
+	local -r cmd=( "$@" )
 	local -i attempt_num=1
 
 	until $cmd
@@ -83,8 +83,8 @@ retry() {
 
 build_and_push_kuredimage() {
 	make image
-        docker tag docker.io/weaveworks/kured $KURED_IMAGE_DEST
-        docker push $KURED_IMAGE_DEST
+        docker tag docker.io/weaveworks/kured "$KURED_IMAGE_DEST"
+        docker push "$KURED_IMAGE_DEST"
 }
 
 ############################
@@ -94,7 +94,7 @@ build_and_push_kuredimage() {
 gen_kind_manifest() {
 	echo "Generating kind.yaml"
 	# Please don't name your kind nodes ".*true.*" or "<none>", if you name them
-	cat <<EOF > $tmp_dir/kind.yaml
+	cat <<EOF > "$tmp_dir/kind.yaml"
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
@@ -112,12 +112,12 @@ EOF
 }
 
 check_all_nodes_are_ready() {
-	$kubectl get nodes | grep Ready | wc -l | grep $nodecount > /dev/null
+	$kubectl get nodes | grep -c Ready | grep $nodecount > /dev/null
 }
 
 spinup_cluster() {
 	gen_kind_manifest
-	kind create cluster --name "${KIND_CLUSTER_NAME}" --config=$tmp_dir/kind.yaml
+	kind create cluster --name "${KIND_CLUSTER_NAME}" --config="$tmp_dir/kind.yaml"
 	retry 20 check_all_nodes_are_ready
 	echo "Cluster ready"
 }
@@ -128,7 +128,7 @@ spinup_cluster() {
 
 gen_kured_manifests() {
 	echo "Generating kured manifests in folder $tmp_dir"
-	cp kured-ds.yaml kured-rbac.yaml $tmp_dir/
+	cp kured-ds.yaml kured-rbac.yaml "$tmp_dir/"
 	cat <<EOF > $tmp_dir/kustomization.yaml
 #kustomize.yaml base
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -161,12 +161,12 @@ EOF
 }
 
 check_kured_installed(){
-	$kubectl get ds -n kube-system | egrep "kured.*$nodecount.*$nodecount.*$nodecount.*$nodecount.*$nodecount" > /dev/null
+	$kubectl get ds -n kube-system | grep -E "kured.*$nodecount.*$nodecount.*$nodecount.*$nodecount.*$nodecount" > /dev/null
 }
 
 install_kured() {
 	gen_kured_manifests
-	$kubectl apply -k $tmp_dir
+	$kubectl apply -k "$tmp_dir"
 	retry 20 check_kured_installed
 	echo "Kured is installed now"
 }
@@ -177,8 +177,8 @@ install_kured() {
 
 create_reboot_sentinels() {
 	echo "Creating reboot sentinel on all nodes"
-	for podname in `$kubectl get pods -n kube-system -l name=kured -o name`; do
-		$kubectl exec $podname -n kube-system -- /usr/bin/nsenter -m/proc/1/ns/mnt -- touch /var/run/reboot-required
+	for podname in $($kubectl get pods -n kube-system -l name=kured -o name); do
+		$kubectl exec "$podname" -n kube-system -- /usr/bin/nsenter -m/proc/1/ns/mnt -- touch /var/run/reboot-required
 	done
 }
 
@@ -190,26 +190,26 @@ follow_coordinated_reboot() {
 	local -r -i max_attempts="60" #20 minutes
 	local -i attempt_num=1
 
-	until [ ${#was_unschedulable[@]} == $nodecount ] && [ ${#has_recovered[@]} == $nodecount ]
+	until [ ${#was_unschedulable[@]} = $nodecount ] && [ ${#has_recovered[@]} = $nodecount ]
 	do
-		echo "${#was_unschedulable[@]} nodes were removed from pool once: ${!was_unschedulable[@]}"
-		echo "${#has_recovered[@]} nodes removed from the pool are now back: ${!has_recovered[@]}"
+		echo "${#was_unschedulable[@]} nodes were removed from pool once: " "${!was_unschedulable[@]}"
+		echo "${#has_recovered[@]} nodes removed from the pool are now back: " "${!has_recovered[@]}"
 
-		$kubectl get nodes -o custom-columns=NAME:.metadata.name,SCHEDULABLE:.spec.unschedulable --no-headers > $tmp_dir/node_output
-		while read node; do
-			unschedulable=$(echo $node | grep true | cut -f 1 -d ' ')
+		$kubectl get nodes -o custom-columns=NAME:.metadata.name,SCHEDULABLE:.spec.unschedulable --no-headers > "$tmp_dir/node_output"
+		while read -r node; do
+			unschedulable=$(echo "$node" | grep true | cut -f 1 -d ' ')
 			if [ -n "$unschedulable" ] && [ -z ${was_unschedulable["$unschedulable"]+x} ] ; then
 				echo "$unschedulable is now unschedulable!"
 				was_unschedulable["$unschedulable"]=1
 			fi
-			schedulable=$(echo $node | grep '<none>' | cut -f 1 -d ' ')
+			schedulable=$(echo "$node" | grep '<none>' | cut -f 1 -d ' ')
 			if [ -n "$schedulable" ] && [ ${was_unschedulable["$schedulable"]+x} ] && [ -z ${has_recovered["$schedulable"]+x} ]; then
 				echo "$schedulable has recovered!"
 				has_recovered["$schedulable"]=1
 			fi
-		done < $tmp_dir/node_output
+		done < "$tmp_dir/node_output"
 
-		if [ ${#has_recovered[@]} == $nodecount ]; then
+		if [ ${#has_recovered[@]} = $nodecount ]; then
 			break
 		else
 			if (( attempt_num == max_attempts ))
@@ -224,7 +224,7 @@ follow_coordinated_reboot() {
 		(( attempt_num++ ))
 	done
 	set -o errexit
-	rm $tmp_dir/node_output
+	rm "$tmp_dir/node_output"
 }
 
 functional_test() {

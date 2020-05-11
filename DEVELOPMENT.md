@@ -77,7 +77,7 @@ real life testing.
 
 ### Testing with `kind`
 
-The `kind.sh` script requires bash >=4, (e)grep, kubectl, and kind installed.
+The `kind.sh` script requires bash >=4, grep, kubectl, and kind installed.
 
 A test-run with `kind` consists of setting environment variables, and
 run the `kind.sh` script.
