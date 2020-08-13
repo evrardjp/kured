@@ -10,18 +10,16 @@ rules:
 # NB: These permissions are tightly coupled to the bundled version of kubectl; the ones below
 # match https://github.com/kubernetes/kubernetes/blob/v1.17.7/staging/src/k8s.io/kubectl/pkg/cmd/drain/drain.go
 #
+# Nodes get can probably get removed. To be tested.
 - apiGroups: [""]
   resources: ["nodes"]
-  verbs:     ["get", "patch"]
+  verbs:     ["get"]
 - apiGroups: [""]
   resources: ["pods"]
-  verbs:     ["list","delete","get"]
+  verbs:     ["list","get"]
 - apiGroups: ["apps"]
   resources: ["daemonsets"]
   verbs:     ["get"]
-- apiGroups: [""]
-  resources: ["pods/eviction"]
-  verbs:     ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

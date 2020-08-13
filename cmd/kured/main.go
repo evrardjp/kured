@@ -28,17 +28,18 @@ var (
 	version = "unreleased"
 
 	// Command line flags
-	period         time.Duration
-	dsNamespace    string
-	dsName         string
-	lockAnnotation string
-	prometheusURL  string
-	alertFilter    *regexp.Regexp
-	rebootSentinel string
-	slackHookURL   string
-	slackUsername  string
-	slackChannel   string
-	podSelectors   []string
+	period            time.Duration
+	dsNamespace       string
+	dsName            string
+	lockAnnotation    string
+	prometheusURL     string
+	alertFilter       *regexp.Regexp
+	rebootSentinel    string
+	kubeletconfigPath string
+	slackHookURL      string
+	slackUsername     string
+	slackChannel      string
+	podSelectors      []string
 
 	rebootDays  []string
 	rebootStart string
@@ -79,6 +80,8 @@ func main() {
 		"alert names to ignore when checking for active alerts")
 	rootCmd.PersistentFlags().StringVar(&rebootSentinel, "reboot-sentinel", "/var/run/reboot-required",
 		"path to file whose existence signals need to reboot")
+	rootCmd.PersistentFlags().StringVar(&kubeletconfigPath, "kubelet-config-path", "/etc/kubernetes/kubelet.conf",
+		"path pointing to the kubelet configuration file on the host")
 
 	rootCmd.PersistentFlags().StringVar(&slackHookURL, "slack-hook-url", "",
 		"slack hook URL for reboot notfications")
@@ -231,7 +234,7 @@ func release(lock *daemonsetlock.DaemonSetLock) {
 	}
 }
 
-func drain(nodeID string) {
+func drain(nodeID string, kubeletconfigPath string) {
 	log.Infof("Draining node %s", nodeID)
 
 	if slackHookURL != "" {
@@ -240,17 +243,34 @@ func drain(nodeID string) {
 		}
 	}
 
-	drainCmd := newCommand("/usr/bin/kubectl", "drain",
-		"--ignore-daemonsets", "--delete-local-data", "--force", nodeID)
+	var kubectlArgs []string
+	// Let's not break kured if the file is not found, and the user wants to use kured with a higher rbac instead.
+	if _, err := os.Stat(kubeletconfigPath); os.IsExist(err) {
+		kubectlArgs = append(kubectlArgs, fmt.Sprintf("--kubeconfig=%s", kubeletconfigPath))
+	} else {
+		log.Warnf("kubectl configuration file not found in %s", kubeletconfigPath)
+	}
+	kubectlArgs = append(kubectlArgs, "drain", "--ignore-daemonsets", "--delete-local-data", "--force", nodeID)
+
+	drainCmd := newCommand("/usr/bin/kubectl", kubectlArgs...)
 
 	if err := drainCmd.Run(); err != nil {
 		log.Fatalf("Error invoking drain command: %v", err)
 	}
 }
 
-func uncordon(nodeID string) {
+func uncordon(nodeID string, kubeletconfigPath string) {
 	log.Infof("Uncordoning node %s", nodeID)
-	uncordonCmd := newCommand("/usr/bin/kubectl", "uncordon", nodeID)
+
+	var kubectlArgs []string
+	if _, err := os.Stat(kubeletconfigPath); os.IsExist(err) {
+		kubectlArgs = append(kubectlArgs, fmt.Sprintf("--kubeconfig=%s", kubeletconfigPath))
+	} else {
+		log.Warnf("kubectl configuration file not found in %s", kubeletconfigPath)
+	}
+	kubectlArgs = append(kubectlArgs, "uncordon", nodeID)
+
+	uncordonCmd := newCommand("/usr/bin/kubectl", kubectlArgs...)
 	if err := uncordonCmd.Run(); err != nil {
 		log.Fatalf("Error invoking uncordon command: %v", err)
 	}
@@ -288,7 +308,11 @@ type nodeMeta struct {
 	Unschedulable bool `json:"unschedulable"`
 }
 
-func rebootAsRequired(nodeID string, window *timewindow.TimeWindow, TTL time.Duration) {
+func rebootAsRequired(nodeID string, kubeletconfigPath string, window *timewindow.TimeWindow, TTL time.Duration) {
+	// InClusterConfig now has limited access (see kured-rbac): we can't use
+	// it for drain/cordon operations. We now rely on local kubelet config
+	// file to impersonate the kubelet, which only allows change for its
+	// own node. See also https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#noderestriction
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		log.Fatal(err)
@@ -304,7 +328,7 @@ func rebootAsRequired(nodeID string, window *timewindow.TimeWindow, TTL time.Dur
 	nodeMeta := nodeMeta{}
 	if holding(lock, &nodeMeta) {
 		if !nodeMeta.Unschedulable {
-			uncordon(nodeID)
+			uncordon(nodeID, kubeletconfigPath)
 		}
 		release(lock)
 	}
@@ -321,7 +345,7 @@ func rebootAsRequired(nodeID string, window *timewindow.TimeWindow, TTL time.Dur
 
 			if acquire(lock, &nodeMeta, TTL) {
 				if !nodeMeta.Unschedulable {
-					drain(nodeID)
+					drain(nodeID, kubeletconfigPath)
 				}
 				commandReboot(nodeID)
 				for {
@@ -357,7 +381,7 @@ func root(cmd *cobra.Command, args []string) {
 		log.Info("Force annotation cleanup disabled.")
 	}
 
-	go rebootAsRequired(nodeID, window, annotationTTL)
+	go rebootAsRequired(nodeID, kubeletconfigPath, window, annotationTTL)
 	go maintainRebootRequiredMetric(nodeID)
 
 	http.Handle("/metrics", promhttp.Handler())

@@ -27,12 +27,28 @@ spec:
           effect: NoSchedule
       hostPID: true # Facilitate entering the host mount namespace via init
       restartPolicy: Always
+      volumes:
+      - hostPath:
+          path: /etc/kubernetes
+          type: DirectoryOrCreate
+        name: host-kubernetes-dir
+      - hostPath:
+          path: /var/lib/kubelet
+          type: DirectoryOrCreate
+        name: host-kubelet-dir
       containers:
         - name: kured
           image: docker.io/weaveworks/kured
                  # If you find yourself here wondering why there is no
                  # :latest tag on Docker Hub,see the FAQ in the README
           imagePullPolicy: IfNotPresent
+          volumeMounts:
+          - mountPath: /etc/kubernetes
+            name: host-kubernetes-dir
+            readOnly: true
+          - mountPath: /var/lib/kubelet
+            name: host-kubelet-dir
+            readOnly: true
           securityContext:
             privileged: true # Give permission to nsenter /proc/1/ns/mnt
           env:
