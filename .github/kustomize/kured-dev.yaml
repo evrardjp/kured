@@ -1,0 +1,14 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kured
+  namespace: kube-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: kured
+        imagePullPolicy: Always
+        command:
+        - /usr/bin/kured
+        - --period=1m
