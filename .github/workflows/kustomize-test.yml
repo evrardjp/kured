@@ -24,11 +24,23 @@ jobs:
       - name: Create a default kind cluster
         uses: helm/kind-action@master
 
+      # Kustomize won't work with symlinks to resources outside its folder
       # kind-action already installed kind and kubectl.
       - name: Deploy using kustomize/kubectl
         run: |
-          kubectl apply -k .github/kustomize
+          cp kured-{ds,rbac}.yaml .github/kustomize/
+          kubectl apply -k .github/kustomize/
 
+      - name: Deploy using kustomize/kubectl
+        run: |
+          kubectl get ds -n kube-system
+      - name: Show kured
+        uses: nick-invision/retry@v1
+        with:
+          timeout_minutes: 5
+          max_attempts: 2
+          retry_wait_seconds: 10
+          command: kubectl get ds -n kube-system
       - name: Ensure kured can come up
         uses: nick-invision/retry@v1
         with:
