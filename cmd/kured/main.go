@@ -25,6 +25,7 @@ import (
 	"github.com/weaveworks/kured/pkg/delaytick"
 	"github.com/weaveworks/kured/pkg/notifications/slack"
 	"github.com/weaveworks/kured/pkg/timewindow"
+	shoutrrr "github.com/containrrr/shoutrrr"
 )
 
 var (
@@ -42,6 +43,7 @@ var (
 	slackHookURL           string
 	slackUsername          string
 	slackChannel           string
+	notifyURL	           string
 	messageTemplateDrain   string
 	messageTemplateReboot  string
 	podSelectors           []string
@@ -67,6 +69,7 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "kured",
 		Short: "Kubernetes Reboot Daemon",
+		PreRun: flagcheck,
 		Run:   root}
 
 	rootCmd.PersistentFlags().DurationVar(&period, "period", time.Minute*60,
@@ -92,6 +95,8 @@ func main() {
 		"slack username for reboot notfications")
 	rootCmd.PersistentFlags().StringVar(&slackChannel, "slack-channel", "",
 		"slack channel for reboot notfications")
+		rootCmd.PersistentFlags().StringVar(&notifyURL, "notify-url", "",
+		"a formatted URL to send notifications")
 	rootCmd.PersistentFlags().StringVar(&messageTemplateDrain, "message-template-drain", "Draining node %s",
 		"message template used to notify about a node being drained")
 	rootCmd.PersistentFlags().StringVar(&messageTemplateReboot, "message-template-reboot", "Rebooting node %s",
@@ -111,6 +116,16 @@ func main() {
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func flagcheck(cmd *cobra.Command, args []string) {
+	if slackHookURL != "" && notifyURL != "" {
+		log.Warnf("Cannot use both --notify-url and --slack-hook-url flags. Kured will use --notify-url flag only...")
+		slackHookURL = ""
+	}
+	if slackChannel != "" || slackHookURL != "" || slackUsername != "" {
+		log.Warnf("Deprecated flag(s). Please use --notify-url flag instead.")
 	}
 }
 
@@ -247,6 +262,11 @@ func drain(client *kubernetes.Clientset, node *v1.Node) {
 			log.Warnf("Error notifying slack: %v", err)
 		}
 	}
+	if notifyURL != "" {
+		if err := shoutrrr.Send(notifyURL, fmt.Sprintf(messageTemplateDrain, nodename)); err != nil {
+			log.Warnf("Error notifying: %v", err)
+		}
+	}
 
 	drainer := &kubectldrain.Helper{
 		Client:              client,
@@ -285,6 +305,11 @@ func commandReboot(nodeID string) {
 	if slackHookURL != "" {
 		if err := slack.NotifyReboot(slackHookURL, slackUsername, slackChannel, messageTemplateReboot, nodeID); err != nil {
 			log.Warnf("Error notifying slack: %v", err)
+		}
+	}
+	if notifyURL != "" {
+		if err := shoutrrr.Send(notifyURL, fmt.Sprintf(messageTemplateReboot, nodeID)); err != nil {
+			log.Warnf("Error notifying: %v", err)
 		}
 	}
 
