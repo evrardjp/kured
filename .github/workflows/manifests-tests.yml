@@ -42,7 +42,7 @@ jobs:
           sleep 10; kubectl describe ds kured -n kube-system
 
       - name: Ensure kured is up
-        uses: nick-invision/retry@v1
+        uses: nick-invision/retry@v2.2.0
         with:
           timeout_minutes: 10
           max_attempts: 10
