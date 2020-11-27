@@ -29,9 +29,10 @@ configuration:
   prometheusUrl: ""         # Prometheus instance to probe for active alerts
   rebootDays: []            # only reboot on these days (default [su,mo,tu,we,th,fr,sa])
   rebootSentinel: ""        # path to file whose existence signals need to reboot (default "/var/run/reboot-required")
-  slackChannel: ""          # slack channel for reboot notfications
-  slackHookUrl: ""          # slack hook URL for reboot notfications
-  slackUsername: ""         # slack username for reboot notfications (default "kured")
+  slackChannel: ""          # DEPRECATED: slack channel for reboot notifications
+  slackHookUrl: ""          # DEPRECATED: slack hook URL for reboot notifications
+  slackUsername: ""         # DEPRECATED: slack username for reboot notifications (default "kured")
+  notifyURL: ""             # shoutrrr style URL for notifications
   messageTemplateDrain: ""  # slack message template when notifying about a node being drained (default "Draining node %s")
   messageTemplateReboot: "" # slack message template when notifying about a node being rebooted (default "Rebooted node %s")
   startTime: ""             # only reboot after this time of day (default "0:00")
