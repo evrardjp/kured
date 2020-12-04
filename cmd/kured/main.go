@@ -31,20 +31,20 @@ var (
 	version = "unreleased"
 
 	// Command line flags
-	period                 time.Duration
-	dsNamespace            string
-	dsName                 string
-	lockAnnotation         string
-	lockTTL                time.Duration
-	prometheusURL          string
-	alertFilter            *regexp.Regexp
-	rebootSentinel         string
-	slackHookURL           string
-	slackUsername          string
-	slackChannel           string
-	messageTemplateDrain   string
-	messageTemplateReboot  string
-	podSelectors           []string
+	period                time.Duration
+	dsNamespace           string
+	dsName                string
+	lockAnnotation        string
+	lockTTL               time.Duration
+	prometheusURL         string
+	alertFilter           *regexp.Regexp
+	rebootSentinel        string
+	slackHookURL          string
+	slackUsername         string
+	slackChannel          string
+	messageTemplateDrain  string
+	messageTemplateReboot string
+	podSelectors          []string
 
 	rebootDays  []string
 	rebootStart string
@@ -131,9 +131,9 @@ func newCommand(name string, arg ...string) *exec.Cmd {
 	return cmd
 }
 
-func sentinelExists() bool {
+func sentinelExists(sentinelCheckCommand ...string) bool {
 	// Relies on hostPID:true and privileged:true to enter host mount space
-	sentinelCmd := newCommand("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "--", "/usr/bin/test", "-f", rebootSentinel)
+	sentinelCmd := newCommand(sentinelCheckCommand[0], sentinelCheckCommand[1:]...)
 	if err := sentinelCmd.Run(); err != nil {
 		switch err := err.(type) {
 		case *exec.ExitError:
@@ -151,8 +151,12 @@ func sentinelExists() bool {
 	return true
 }
 
-func rebootRequired() bool {
-	if sentinelExists() {
+func rebootRequired(testCommand ...string) bool {
+	// when rebootAsRequired is refactored, this can go away
+	if len(testCommand) == 0 {
+		testCommand = append(testCommand, "/usr/bin/nsenter", "-m/proc/1/ns/mnt", "--", "/usr/bin/test", "-f", rebootSentinel)
+	}
+	if sentinelExists(testCommand...) {
 		log.Infof("Reboot required")
 		return true
 	}
@@ -258,11 +262,11 @@ func drain(client *kubernetes.Clientset, node *v1.Node) {
 		Out:                 os.Stdout,
 	}
 	if err := kubectldrain.RunCordonOrUncordon(drainer, node, true); err != nil {
-		log.Fatal("Error cordonning %s: %v", nodename, err)
+		log.Fatalf("Error cordonning %s: %v", nodename, err)
 	}
 
 	if err := kubectldrain.RunNodeDrain(drainer, nodename); err != nil {
-		log.Fatal("Error draining %s: %v", nodename, err)
+		log.Fatalf("Error draining %s: %v", nodename, err)
 	}
 }
 
@@ -275,7 +279,7 @@ func uncordon(client *kubernetes.Clientset, node *v1.Node) {
 		Out:    os.Stdout,
 	}
 	if err := kubectldrain.RunCordonOrUncordon(drainer, node, false); err != nil {
-		log.Fatal("Error uncordonning %s: %v", nodename, err)
+		log.Fatalf("Error uncordonning %s: %v", nodename, err)
 	}
 }
 
