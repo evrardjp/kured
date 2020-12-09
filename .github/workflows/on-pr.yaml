@@ -80,6 +80,7 @@ jobs:
         kubernetes:
           - 1.17
           - 1.19
+    fail-fast: false
     steps:
       - uses: actions/checkout@v2
       - name: Find go version
