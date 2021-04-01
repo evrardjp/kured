@@ -80,6 +80,8 @@ func (kb KubernetesBlockingChecker) isBlocked() bool {
 	return false
 }
 
+// IsRebootBlocked can be used to check if anything blocks
+// a reboot. Only returns a boolean, not the reason for blocking.
 func IsRebootBlocked(blockers ...RebootBlocker) bool {
 	for _, blocker := range blockers {
 		if blocker.isBlocked() {

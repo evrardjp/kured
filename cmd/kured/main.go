@@ -23,12 +23,10 @@ import (
 
 	"github.com/google/shlex"
 
-	shoutrrr "github.com/containrrr/shoutrrr"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/weaveworks/kured/pkg/daemonsetlock"
 	"github.com/weaveworks/kured/pkg/delaytick"
-	"github.com/weaveworks/kured/pkg/notifications/slack"
 	rb "github.com/weaveworks/kured/pkg/rebootblockers"
 	"github.com/weaveworks/kured/pkg/taints"
 	"github.com/weaveworks/kured/pkg/timewindow"
@@ -159,16 +157,46 @@ func main() {
 	}
 }
 
+// parseSentinelCommand creates the shell command line based on user provided args
+// This might need some nsenter wrapping to escape the container process namespace boundaries
+func parseSentinelCommand(rebootSentinelFile string, rebootSentinelCommand string) []string {
+	if rebootSentinelCommand != "" {
+		return parseRebootCommand(rebootSentinelCommand)
+	}
+	return []string{"test", "-f", rebootSentinelFile}
+}
+
+// parseRebootCommand creates the shell command line based on user provided args.
+// This might need some nsenter wrapping to escape the container process namespace boundaries
+func parseRebootCommand(rebootCommand string) []string {
+	command, err := shlex.Split(rebootCommand)
+	if err != nil {
+		log.Fatalf("Error parsing provided command: %v", err)
+	}
+	return command
+}
+
+func parseNotificationsFlags(notifyURL string, slackHookURL string, slackChannel string, slackUsername string) string {
+	if notifyURL != "" {
+		if slackHookURL != "" {
+			log.Warn("Cannot use both --notify-url and --slack-hook-url flags. Kured will use --notify-url flag only...")
+		}
+		return notifyURL
+	} else if slackHookURL != "" {
+		log.Warnf("Deprecated flag(s). Please use --notify-url flag instead.")
+		if slackChannel == "" {
+			log.Error("Incorrect configuration. Please provide a slack channel and a slack username")
+		}
+		return slackHookURL
+	}
+	return ""
+
+}
+
 // parse user/os provided data
 func validateArgs(cmd *cobra.Command, args []string) {
 	// validate notifications
-	if slackHookURL != "" && notifyURL != "" {
-		log.Warnf("Cannot use both --notify-url and --slack-hook-url flags. Kured will use --notify-url flag only...")
-		slackHookURL = ""
-	}
-	if slackChannel != "" || slackHookURL != "" || slackUsername != "" {
-		log.Warnf("Deprecated flag(s). Please use --notify-url flag instead.")
-	}
+	parseNotificationsFlags(notifyURL, slackHookURL, slackChannel, slackUsername)
 
 	// validate provided command lines given in args
 	rebootSentinelCommand = parseSentinelCommand(rebootSentinelFile, rebootSentinelCommandFlag)
@@ -197,19 +225,6 @@ func newCommand(name string, arg ...string) *exec.Cmd {
 		WithField("std", "err").
 		WriterLevel(log.WarnLevel)
 
-	return cmd
-}
-
-// buildHostCommand writes a new command to run in the host namespace
-// Rancher based need different pid
-func buildHostCommand(command []string) []string {
-	// By default, use PID1
-	pid := 1
-
-	// From the container, we nsenter into the proper PID to run the hostCommand.
-	// For this, kured daemonset need to be configured with hostPID:true and privileged:true
-	cmd := []string{"/usr/bin/nsenter", fmt.Sprintf("-m/proc/%d/ns/mnt", pid), "--"}
-	cmd = append(cmd, command...)
 	return cmd
 }
 
@@ -450,33 +465,11 @@ func rebootAsRequired(nodeID string, rebootCommand []string, sentinelCommand []s
 
 		log.Infof("Draining node %s", nodeID)
 
-		if slackHookURL != "" {
-			if err := slack.NotifyDrain(slackHookURL, slackUsername, slackChannel, messageTemplateDrain, nodeID); err != nil {
-				log.Warnf("Error notifying slack: %v", err)
-			}
-		}
-		if notifyURL != "" {
-			if err := shoutrrr.Send(notifyURL, fmt.Sprintf(messageTemplateDrain, nodeID)); err != nil {
-				log.Warnf("Error notifying: %v", err)
-			}
-		}
-
+		// TODO INSERT REFACTORED NOTIFY DRAIN
 		drain(client, node)
 
-		log.Infof("Running command: %s for node: %s", rebootCommand, nodeID)
-
-		// To be cleaned up
-		if slackHookURL != "" {
-			if err := slack.NotifyReboot(slackHookURL, slackUsername, slackChannel, messageTemplateReboot, nodeID); err != nil {
-				log.Warnf("Error notifying slack: %v", err)
-			}
-		}
-		if notifyURL != "" {
-			if err := shoutrrr.Send(notifyURL, fmt.Sprintf(messageTemplateReboot, nodeID)); err != nil {
-				log.Warnf("Error notifying: %v", err)
-			}
-		}
-
+		// TODO INSERT REFACTORED NOTIFY REBOOT
+		log.Infof("Running command: %v for nodename: %v", rebootCommand, nodeID)
 		if err := newCommand(rebootCommand[0], rebootCommand[1:]...).Run(); err != nil {
 			log.Fatalf("Error invoking reboot command: %v", err)
 		}
@@ -488,23 +481,17 @@ func rebootAsRequired(nodeID string, rebootCommand []string, sentinelCommand []s
 	}
 }
 
-// parseSentinelCommand creates the shell command line based on user provided args
-// This might need some nsenter wrapping to escape the container process namespace boundaries
-func parseSentinelCommand(rebootSentinelFile string, rebootSentinelCommand string) []string {
-	if rebootSentinelCommand != "" {
-		return parseRebootCommand(rebootSentinelCommand)
-	}
-	return []string{"test", "-f", rebootSentinelFile}
-}
+// buildHostCommand writes a new command to run in the host namespace
+// Rancher based need different pid
+func buildHostCommand(command []string) []string {
+	// By default, use PID1
+	pid := 1
 
-// parseRebootCommand creates the shell command line based on user provided args.
-// This might need some nsenter wrapping to escape the container process namespace boundaries
-func parseRebootCommand(rebootCommand string) []string {
-	command, err := shlex.Split(rebootCommand)
-	if err != nil {
-		log.Fatalf("Error parsing provided command: %v", err)
-	}
-	return command
+	// From the container, we nsenter into the proper PID to run the hostCommand.
+	// For this, kured daemonset need to be configured with hostPID:true and privileged:true
+	cmd := []string{"/usr/bin/nsenter", fmt.Sprintf("-m/proc/%d/ns/mnt", pid), "--"}
+	cmd = append(cmd, command...)
+	return cmd
 }
 
 func root(cmd *cobra.Command, args []string) {
