@@ -267,19 +267,6 @@ func release(lock *daemonsetlock.DaemonSetLock) {
 func drain(client *kubernetes.Clientset, node *v1.Node) {
 	nodename := node.GetName()
 
-	log.Infof("Draining node %s", nodename)
-
-	if slackHookURL != "" {
-		if err := slack.NotifyDrain(slackHookURL, slackUsername, slackChannel, messageTemplateDrain, nodename); err != nil {
-			log.Warnf("Error notifying slack: %v", err)
-		}
-	}
-	if notifyURL != "" {
-		if err := shoutrrr.Send(notifyURL, fmt.Sprintf(messageTemplateDrain, nodename)); err != nil {
-			log.Warnf("Error notifying: %v", err)
-		}
-	}
-
 	drainer := &kubectldrain.Helper{
 		Client:              client,
 		GracePeriodSeconds:  -1,
@@ -300,7 +287,6 @@ func drain(client *kubernetes.Clientset, node *v1.Node) {
 
 func uncordon(client *kubernetes.Clientset, node *v1.Node) {
 	nodename := node.GetName()
-	log.Infof("Uncordoning node %s", nodename)
 	drainer := &kubectldrain.Helper{
 		Client: client,
 		ErrOut: os.Stderr,
@@ -308,28 +294,6 @@ func uncordon(client *kubernetes.Clientset, node *v1.Node) {
 	}
 	if err := kubectldrain.RunCordonOrUncordon(drainer, node, false); err != nil {
 		log.Fatalf("Error uncordonning %s: %v", nodename, err)
-	}
-}
-
-func invokeReboot(nodeID string, rebootCommand []string) {
-	log.Infof("Running command: %s for node: %s", rebootCommand, nodeID)
-
-	if slackHookURL != "" {
-		if err := slack.NotifyReboot(slackHookURL, slackUsername, slackChannel, messageTemplateReboot, nodeID); err != nil {
-			log.Warnf("Error notifying slack: %v", err)
-		}
-	}
-
-	if notifyURL != "" {
-		if err := shoutrrr.Send(notifyURL, fmt.Sprintf(messageTemplateReboot, nodeID)); err != nil {
-			log.Warnf("Error notifying: %v", err)
-		}
-	}
-
-	// Relies on hostPID:true and privileged:true to enter host mount space
-	rebootCmd := newCommand("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/bin/systemctl", "reboot")
-	if err := rebootCmd.Run(); err != nil {
-		log.Fatalf("Error invoking reboot command: %v", err)
 	}
 }
 
@@ -407,6 +371,7 @@ func rebootAsRequired(nodeID string, rebootCommand []string, sentinelCommand []s
 			log.Fatalf("Error retrieving node object via k8s API: %v", err)
 		}
 		if !nodeMeta.Unschedulable {
+			log.Infof("Uncordoning node %s", nodeID)
 			uncordon(client, node)
 		}
 		// If we're holding the lock we know we've tried, in a prior run, to reboot
@@ -483,8 +448,39 @@ func rebootAsRequired(nodeID string, rebootCommand []string, sentinelCommand []s
 			continue
 		}
 
+		log.Infof("Draining node %s", nodeID)
+
+		if slackHookURL != "" {
+			if err := slack.NotifyDrain(slackHookURL, slackUsername, slackChannel, messageTemplateDrain, nodeID); err != nil {
+				log.Warnf("Error notifying slack: %v", err)
+			}
+		}
+		if notifyURL != "" {
+			if err := shoutrrr.Send(notifyURL, fmt.Sprintf(messageTemplateDrain, nodeID)); err != nil {
+				log.Warnf("Error notifying: %v", err)
+			}
+		}
+
 		drain(client, node)
-		invokeReboot(nodeID, rebootCommand)
+
+		log.Infof("Running command: %s for node: %s", rebootCommand, nodeID)
+
+		// To be cleaned up
+		if slackHookURL != "" {
+			if err := slack.NotifyReboot(slackHookURL, slackUsername, slackChannel, messageTemplateReboot, nodeID); err != nil {
+				log.Warnf("Error notifying slack: %v", err)
+			}
+		}
+		if notifyURL != "" {
+			if err := shoutrrr.Send(notifyURL, fmt.Sprintf(messageTemplateReboot, nodeID)); err != nil {
+				log.Warnf("Error notifying: %v", err)
+			}
+		}
+
+		if err := newCommand(rebootCommand[0], rebootCommand[1:]...).Run(); err != nil {
+			log.Fatalf("Error invoking reboot command: %v", err)
+		}
+
 		for {
 			log.Infof("Waiting for reboot")
 			time.Sleep(time.Minute)
