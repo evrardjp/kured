@@ -1,0 +1,4 @@
+general:
+  vulnerabilities:
+    # We are not using crypto ssh component. crypto is pulled through deps.
+    - CVE-2020-29652
