@@ -37,7 +37,7 @@ jobs:
         echo "::set-output name=version::${GO_VERSION}"
       id: awk_gomod
     - name: Ensure go version
-      uses: actions/setup-go@v2
+      uses: actions/setup-go@v3
       with:
         go-version: "${{ steps.awk_gomod.outputs.version }}"
     - name: Lint cmd folder
@@ -76,7 +76,7 @@ jobs:
           echo "::set-output name=version::${GO_VERSION}"
         id: awk_gomod
       - name: Ensure go version
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v3
         with:
           go-version: "${{ steps.awk_gomod.outputs.version }}"
       - run: make DH_ORG="${{ github.repository_owner }}" VERSION="${{ github.sha }}" image
@@ -108,7 +108,7 @@ jobs:
           echo "::set-output name=version::${GO_VERSION}"
         id: awk_gomod
       - name: Ensure go version
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v3
         with:
           go-version: "${{ steps.awk_gomod.outputs.version }}"
       - name: Build artifacts
@@ -179,7 +179,7 @@ jobs:
           echo "::set-output name=version::${GO_VERSION}"
         id: awk_gomod
       - name: Ensure go version
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v3
         with:
           go-version: "${{ steps.awk_gomod.outputs.version }}"
       - name: Build artifacts
@@ -270,7 +270,7 @@ jobs:
   #         echo "::set-output name=version::${GO_VERSION}"
   #       id: awk_gomod
   #     - name: Ensure go version
-  #       uses: actions/setup-go@v2
+  #       uses: actions/setup-go@v3
   #       with:
   #         go-version: "${{ steps.awk_gomod.outputs.version }}"
   #     - name: Build artifacts
