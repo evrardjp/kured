@@ -52,11 +52,11 @@ jobs:
         go-version: "${{ steps.awk_gomod.outputs.version }}"
         check-latest: true
     - name: Lint cmd folder
-      uses: Jerome1337/golint-action@v1.0.2
+      uses: Jerome1337/golint-action@v1.0.3
       with:
         golint-path: './cmd/...'
     - name: Lint pkg folder
-      uses: Jerome1337/golint-action@v1.0.2
+      uses: Jerome1337/golint-action@v1.0.3
       with:
         golint-path: './pkg/...'
 
