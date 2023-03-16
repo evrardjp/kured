@@ -59,7 +59,7 @@ jobs:
           echo "::set-output name=version::${GO_VERSION}"
         id: awk_gomod
       - name: Ensure go version
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v4
         with:
           go-version: "${{ steps.awk_gomod.outputs.version }}"
           check-latest: true
