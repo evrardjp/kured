@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-18.04
     steps:
       - name: checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Find go version
         run: |
           GO_VERSION=$(awk '/^go/ {print $2};' go.mod)
@@ -32,7 +32,7 @@ jobs:
     name: Lint bash code with shellcheck
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Run ShellCheck
       uses: bewuethr/shellcheck-action@v2
 
@@ -40,7 +40,7 @@ jobs:
     name: Lint golang code
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Find go version
       run: |
         GO_VERSION=$(awk '/^go/ {print $2};' go.mod)
@@ -64,7 +64,7 @@ jobs:
     name: Check docs for incorrect links
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Link Checker
       id: lc
       uses: peter-evans/link-checker@v1
@@ -80,7 +80,7 @@ jobs:
     name: Build image and scan it against known vulnerabilities
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Find go version
         run: |
           GO_VERSION=$(awk '/^go/ {print $2};' go.mod)
@@ -116,7 +116,7 @@ jobs:
           - "1.23"
           - "1.24"
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Find go version
         run: |
           GO_VERSION=$(awk '/^go/ {print $2};' go.mod)
