@@ -400,68 +400,6 @@ func stripQuotes(str string) string {
 	return str
 }
 
-func holding(lock *daemonsetlock.DaemonSetLock, metadata interface{}, isMultiLock bool) bool {
-	var holding bool
-	var err error
-	if isMultiLock {
-		holding, err = lock.TestMultiple()
-	} else {
-		holding, err = lock.Test(metadata)
-	}
-	if err != nil {
-		log.Fatalf("Error testing lock: %v", err)
-	}
-	if holding {
-		log.Infof("Holding lock")
-	}
-	return holding
-}
-
-func acquire(lock *daemonsetlock.DaemonSetLock, metadata interface{}, TTL time.Duration, maxOwners int) bool {
-	var holding bool
-	var holder string
-	var err error
-	if maxOwners > 1 {
-		var holders []string
-		holding, holders, err = lock.AcquireMultiple(metadata, TTL, maxOwners)
-		holder = strings.Join(holders, ",")
-	} else {
-		holding, holder, err = lock.Acquire(metadata, TTL)
-	}
-	switch {
-	case err != nil:
-		log.Fatalf("Error acquiring lock: %v", err)
-		return false
-	case !holding:
-		log.Warnf("Lock already held: %v", holder)
-		return false
-	default:
-		log.Infof("Acquired reboot lock")
-		return true
-	}
-}
-
-func throttle(releaseDelay time.Duration) {
-	if releaseDelay > 0 {
-		log.Infof("Delaying lock release by %v", releaseDelay)
-		time.Sleep(releaseDelay)
-	}
-}
-
-func release(lock *daemonsetlock.DaemonSetLock, isMultiLock bool) {
-	log.Infof("Releasing lock")
-
-	var err error
-	if isMultiLock {
-		err = lock.ReleaseMultiple()
-	} else {
-		err = lock.Release()
-	}
-	if err != nil {
-		log.Fatalf("Error releasing lock: %v", err)
-	}
-}
-
 func drain(client *kubernetes.Clientset, node *v1.Node) error {
 	nodename := node.GetName()
 
@@ -535,11 +473,6 @@ func maintainRebootRequiredMetric(nodeID string, checker checkers.Checker) {
 		}
 		time.Sleep(time.Minute)
 	}
-}
-
-// nodeMeta is used to remember information across reboots
-type nodeMeta struct {
-	Unschedulable bool `json:"unschedulable"`
 }
 
 func addNodeAnnotations(client *kubernetes.Clientset, nodeID string, annotations map[string]string) error {
@@ -627,19 +560,23 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 		log.Fatal(err)
 	}
 
-	lock := daemonsetlock.New(client, nodeID, dsNamespace, dsName, lockAnnotation)
+	lock := daemonsetlock.New(client, nodeID, dsNamespace, dsName, lockAnnotation, TTL, concurrency)
 
-	nodeMeta := nodeMeta{}
 	source := rand.NewSource(time.Now().UnixNano())
 	tick := delaytick.New(source, 1*time.Minute)
 	for range tick {
-		if holding(lock, &nodeMeta, concurrency > 1) {
+		holding, lockData, err := lock.Holding()
+		if err != nil {
+			log.Errorf("Error testing lock: %v", err)
+		}
+		if holding {
 			node, err := client.CoreV1().Nodes().Get(context.TODO(), nodeID, metav1.GetOptions{})
 			if err != nil {
 				log.Errorf("Error retrieving node object via k8s API: %v", err)
 				continue
 			}
-			if !nodeMeta.Unschedulable {
+
+			if !lockData.Metadata.Unschedulable {
 				err = uncordon(client, node)
 				if err != nil {
 					log.Errorf("Unable to uncordon %s: %v, will continue to hold lock and retry uncordon", node.GetName(), err)
@@ -665,8 +602,16 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 					}
 				}
 			}
-			throttle(releaseDelay)
-			release(lock, concurrency > 1)
+
+			if releaseDelay > 0 {
+				log.Infof("Delaying lock release by %v", releaseDelay)
+				time.Sleep(releaseDelay)
+			}
+			err = lock.Release()
+			if err != nil {
+				log.Errorf("Error releasing lock, will retry: %v", err)
+				continue
+			}
 			break
 		} else {
 			break
@@ -705,7 +650,8 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 		if err != nil {
 			log.Fatalf("Error retrieving node object via k8s API: %v", err)
 		}
-		nodeMeta.Unschedulable = node.Spec.Unschedulable
+
+		nodeMeta := daemonsetlock.NodeMeta{Unschedulable: node.Spec.Unschedulable}
 
 		var timeNowString string
 		if annotateNodes {
@@ -738,17 +684,32 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 		}
 		log.Infof("Reboot required%s", rebootRequiredBlockCondition)
 
-		if !holding(lock, &nodeMeta, concurrency > 1) && !acquire(lock, &nodeMeta, TTL, concurrency) {
-			// Prefer to not schedule pods onto this node to avoid draing the same pod multiple times.
-			preferNoScheduleTaint.Enable()
-			continue
+		holding, _, err := lock.Holding()
+		if err != nil {
+			log.Errorf("Error testing lock: %v", err)
+		}
+
+		if !holding {
+			acquired, holder, err := lock.Acquire(nodeMeta)
+			if err != nil {
+				log.Errorf("Error acquiring lock: %v", err)
+			}
+			if !acquired {
+				log.Warnf("Lock already held: %v", holder)
+				// Prefer to not schedule pods onto this node to avoid draing the same pod multiple times.
+				preferNoScheduleTaint.Enable()
+				continue
+			}
 		}
 
 		err = drain(client, node)
 		if err != nil {
 			if !forceReboot {
 				log.Errorf("Unable to cordon or drain %s: %v, will release lock and retry cordon and drain before rebooting when lock is next acquired", node.GetName(), err)
-				release(lock, concurrency > 1)
+				err = lock.Release()
+				if err != nil {
+					log.Errorf("Error releasing lock: %v", err)
+				}
 				log.Infof("Performing a best-effort uncordon after failed cordon and drain")
 				uncordon(client, node)
 				continue
