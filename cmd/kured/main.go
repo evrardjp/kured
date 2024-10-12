@@ -224,18 +224,6 @@ func main() {
 		log.Warnf(err.Error())
 	}
 
-	log.Infof("Lock Annotation: %s/%s:%s", dsNamespace, dsName, lockAnnotation)
-	if lockTTL > 0 {
-		log.Infof("Lock TTL set, lock will expire after: %v", lockTTL)
-	} else {
-		log.Info("Lock TTL not set, lock will remain until being released")
-	}
-	if lockReleaseDelay > 0 {
-		log.Infof("Lock release delay set, lock release will be delayed by: %v", lockReleaseDelay)
-	} else {
-		log.Info("Lock release delay not set, lock will be released immediately after rebooting")
-	}
-
 	log.Infof("PreferNoSchedule taint: %s", preferNoScheduleTaintName)
 
 	// This should be printed from blocker list instead of only blocking pod selectors
@@ -278,7 +266,30 @@ func main() {
 		checker = checkers.NewFileRebootChecker(rebootSentinelFile)
 	}
 
-	go rebootAsRequired(nodeID, rebooter, checker, window, lockTTL, lockReleaseDelay)
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Infof("Lock Annotation: %s/%s:%s", dsNamespace, dsName, lockAnnotation)
+	if lockTTL > 0 {
+		log.Infof("Lock TTL set, lock will expire after: %v", lockTTL)
+	} else {
+		log.Info("Lock TTL not set, lock will remain until being released")
+	}
+	if lockReleaseDelay > 0 {
+		log.Infof("Lock release delay set, lock release will be delayed by: %v", lockReleaseDelay)
+	} else {
+		log.Info("Lock release delay not set, lock will be released immediately after rebooting")
+	}
+	lock := daemonsetlock.New(client, nodeID, dsNamespace, dsName, lockAnnotation, lockTTL, concurrency, lockReleaseDelay)
+
+	go rebootAsRequired(nodeID, rebooter, checker, window, lock, client)
 	go maintainRebootRequiredMetric(nodeID, checker)
 
 	http.Handle("/metrics", promhttp.Handler())
@@ -549,18 +560,7 @@ func updateNodeLabels(client *kubernetes.Clientset, node *v1.Node, labels []stri
 	}
 }
 
-func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.Checker, window *timewindow.TimeWindow, TTL time.Duration, releaseDelay time.Duration) {
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	client, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	lock := daemonsetlock.New(client, nodeID, dsNamespace, dsName, lockAnnotation, TTL, concurrency)
+func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.Checker, window *timewindow.TimeWindow, lock daemonsetlock.Lock, client *kubernetes.Clientset) {
 
 	source := rand.NewSource(time.Now().UnixNano())
 	tick := delaytick.New(source, 1*time.Minute)
@@ -603,10 +603,6 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 				}
 			}
 
-			if releaseDelay > 0 {
-				log.Infof("Delaying lock release by %v", releaseDelay)
-				time.Sleep(releaseDelay)
-			}
 			err = lock.Release()
 			if err != nil {
 				log.Errorf("Error releasing lock, will retry: %v", err)

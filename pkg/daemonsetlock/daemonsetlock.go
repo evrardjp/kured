@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	log "github.com/sirupsen/logrus"
 	"strings"
 	"time"
 
@@ -26,7 +27,8 @@ type Lock interface {
 }
 
 type GenericLock struct {
-	TTL time.Duration
+	TTL          time.Duration
+	releaseDelay time.Duration
 }
 
 type NodeMeta struct {
@@ -76,11 +78,12 @@ type multiLockAnnotationValue struct {
 }
 
 // New creates a daemonsetLock object containing the necessary data for follow up k8s requests
-func New(client *kubernetes.Clientset, nodeID, namespace, name, annotation string, TTL time.Duration, concurrency int) Lock {
+func New(client *kubernetes.Clientset, nodeID, namespace, name, annotation string, TTL time.Duration, concurrency int, lockReleaseDelay time.Duration) Lock {
 	if concurrency > 1 {
 		return &DaemonSetMultiLock{
 			GenericLock: GenericLock{
-				TTL: TTL,
+				TTL:          TTL,
+				releaseDelay: lockReleaseDelay,
 			},
 			DaemonSetLock: DaemonSetLock{
 				client:     client,
@@ -94,7 +97,8 @@ func New(client *kubernetes.Clientset, nodeID, namespace, name, annotation strin
 	} else {
 		return &DaemonSetSingleLock{
 			GenericLock: GenericLock{
-				TTL: TTL,
+				TTL:          TTL,
+				releaseDelay: lockReleaseDelay,
 			},
 			DaemonSetLock: DaemonSetLock{
 				client:     client,
@@ -194,6 +198,10 @@ func (dsl *DaemonSetSingleLock) Holding() (bool, LockAnnotationValue, error) {
 
 // Release attempts to remove the lock data from the kured ds annotations using client-go
 func (dsl *DaemonSetSingleLock) Release() error {
+	if dsl.releaseDelay > 0 {
+		log.Infof("Waiting %v before releasing lock", dsl.releaseDelay)
+		time.Sleep(dsl.releaseDelay)
+	}
 	for {
 		ds, err := dsl.GetDaemonSet(k8sAPICallRetrySleep, k8sAPICallRetryTimeout)
 		if err != nil {
@@ -350,6 +358,10 @@ func (dsl *DaemonSetMultiLock) Holding() (bool, LockAnnotationValue, error) {
 
 // ReleaseMultiple attempts to remove the lock data from the kured ds annotations using client-go
 func (dsl *DaemonSetMultiLock) Release() error {
+	if dsl.releaseDelay > 0 {
+		log.Infof("Waiting %v before releasing lock", dsl.releaseDelay)
+		time.Sleep(dsl.releaseDelay)
+	}
 	for {
 		ds, err := dsl.GetDaemonSet(k8sAPICallRetrySleep, k8sAPICallRetryTimeout)
 		if err != nil {
