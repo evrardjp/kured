@@ -3,6 +3,7 @@ package reboot
 import (
 	"os"
 	"syscall"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -10,10 +11,13 @@ import (
 // SignalRebooter holds context-information for a signal reboot.
 type SignalRebooter struct {
 	Signal int
+	GenericRebooter
 }
 
 // Reboot triggers the reboot signal
 func (c SignalRebooter) Reboot() {
+	c.DelayReboot()
+
 	log.Infof("Invoking signal: %v", c.Signal)
 
 	process, err := os.FindProcess(1)
@@ -31,6 +35,11 @@ func (c SignalRebooter) Reboot() {
 
 // NewSignalRebooter is the constructor which sets the signal number.
 // The constructor does not yet validate any input. It should be done in a later commit.
-func NewSignalRebooter(sig int) *SignalRebooter {
-	return &SignalRebooter{Signal: sig}
+func NewSignalRebooter(sig int, rebootDelay time.Duration) *SignalRebooter {
+	return &SignalRebooter{
+		Signal: sig,
+		GenericRebooter: GenericRebooter{
+			RebootDelay: rebootDelay,
+		},
+	}
 }
