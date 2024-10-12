@@ -136,8 +136,8 @@ func main() {
 		"delay reboot for this duration (default: 0, disabled)")
 	flag.StringVar(&rebootMethod, "reboot-method", "command",
 		"method to use for reboots. Available: command")
-	flag.DurationVar(&period, "period", time.Minute*60,
-		"sentinel check period")
+	flag.DurationVar(&period, "period", time.Minute,
+		"period at which the main operations are done")
 	flag.StringVar(&dsNamespace, "ds-namespace", "kube-system",
 		"namespace containing daemonset on which to place lock")
 	flag.StringVar(&dsName, "ds-name", "kured",
@@ -562,9 +562,8 @@ func updateNodeLabels(client *kubernetes.Clientset, node *v1.Node, labels []stri
 
 func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.Checker, window *timewindow.TimeWindow, lock daemonsetlock.Lock, client *kubernetes.Clientset) {
 
-	source := rand.NewSource(time.Now().UnixNano())
-	tick := delaytick.New(source, 1*time.Minute)
-	for range tick {
+	c := time.Tick(20 * time.Second)
+	for range c {
 		holding, lockData, err := lock.Holding()
 		if err != nil {
 			log.Errorf("Error testing lock: %v", err)
@@ -627,8 +626,8 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 		log.Fatal("Unable to create prometheus client: ", err)
 	}
 
-	source = rand.NewSource(time.Now().UnixNano())
-	tick = delaytick.New(source, period)
+	source := rand.NewSource(time.Now().UnixNano())
+	tick := delaytick.New(source, period)
 	for range tick {
 		if !window.Contains(time.Now()) {
 			// Remove taint outside the reboot time window to allow for normal operation.
