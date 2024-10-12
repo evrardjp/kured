@@ -586,42 +586,35 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 				continue
 			}
 
-			// Get lock data to know if need to uncordon the node
-			// to get the node back to its previous state
-			// TODO: Need to move to another method to check the current data of the lock relevant for this node
-			holding, lockData, err := lock.Holding()
+			// Get lock data to know if we need to uncordon the node,
+			// as the lock contains the spec of the node before we
+			// ran the drain and cordon.
+			holding, lockData, err := lock.GetNodeData()
 			if err != nil {
 				log.Infof("Error checking lock - Not applying any action: %v", err)
 				continue
 			}
+			var wasUnschedulable bool
+			if holding {
+				wasUnschedulable = lockData.Unschedulable
+			} else {
+				wasUnschedulable = false
+			}
 
-			// we check if holding ONLY to know if lockData is valid.
-			// When moving to fetch lockData as a separate method, remove
-			// this whole condition.
-			// However, it means that Release()
-			// need to behave idempotently regardless or not the lock is
-			// held, but that's an ideal state.
-			// what we should simply do is reconcile the lock data
-			// with the node spec. But behind the scenes its a bug
-			// if it's not holding due to an error
-			if holding && !lockData.Metadata.Unschedulable {
-				// Split into two lines to remember I need to remove the first
-				// condition ;)
-				if node.Spec.Unschedulable != lockData.Metadata.Unschedulable && lockData.Metadata.Unschedulable == false {
-					err = uncordon(client, node)
-					if err != nil {
-						log.Infof("Unable to uncordon %s: %v, will continue to hold lock and retry uncordon", node.GetName(), err)
-						continue
-					}
-					// TODO, modify the actions to directly log and notify, instead of individual methods giving
-					// an incomplete view of the lifecycle
-					if notifyURL != "" {
-						if err := shoutrrr.Send(notifyURL, fmt.Sprintf(messageTemplateUncordon, nodeID)); err != nil {
-							log.Warnf("Error notifying: %v", err)
-						}
+			// reconcile node compared to previous data (fetched from lock)
+			if node.Spec.Unschedulable != wasUnschedulable && !wasUnschedulable {
+				err = uncordon(client, node)
+				if err != nil {
+					log.Infof("Unable to uncordon %s: %v, will continue to hold lock and retry uncordon", node.GetName(), err)
+					continue
+				}
+				// TODO, modify the actions to directly log and notify, instead of individual methods giving
+				// an incomplete view of the lifecycle
+				if notifyURL != "" {
+					if err := shoutrrr.Send(notifyURL, fmt.Sprintf(messageTemplateUncordon, nodeID)); err != nil {
+						log.Warnf("Error notifying: %v", err)
 					}
 				}
-
 			}
 
 			// Releasing lock earlier is nice for other nodes
@@ -630,6 +623,7 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 				log.Infof("Error releasing lock, will retry: %v", err)
 				continue
 			}
+
 			// Regardless or not we are holding the lock
 			// The node should not say it's still in progress if the reboot is done
 			if annotateNodes {
@@ -647,6 +641,10 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 			// Act on reboot required.
 			if !window.Contains(time.Now()) {
 				log.Debugf("Reboot required for node %v, but outside maintenance window", nodeID)
+				// Remove Taint, as you might be blocked for a certain time
+				preferNoScheduleTaint.Disable()
+				// Do not remove lock, as the node still needs rebooting, so it might be ready
+				// to reboot at the next opening in terms of maintenance window.
 				continue
 			}
 			// moved up, because we should not put an annotation "Going to be rebooting", if
@@ -684,23 +682,11 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 			// Prefer to not schedule pods onto this node to avoid draing the same pod multiple times.
 			preferNoScheduleTaint.Enable()
 
-			// This could be merged into a single idempotent "Acquire" lock
-			holding, _, err := lock.Holding()
-			if err != nil {
-				log.Debugf("Error testing lock: %v", err)
+			// We might want to add jitter here
+			acquired, err := lock.Acquire(nodeMeta)
+			if err != nil || !acquired {
+				log.Infof("Error acquiring lock: %v", err)
 				continue
-			}
-
-			if !holding {
-				acquired, holder, err := lock.Acquire(nodeMeta)
-				if err != nil {
-					log.Debugf("Error acquiring lock: %v", err)
-					continue
-				}
-				if !acquired {
-					log.Infof("Lock already held by %v, will retry", holder)
-					continue
-				}
 			}
 
 			err = drain(client, node)
