@@ -1,6 +1,7 @@
 package reboot
 
 import (
+	"fmt"
 	"github.com/google/shlex"
 	"github.com/kubereboot/kured/pkg/util"
 	log "github.com/sirupsen/logrus"
@@ -14,12 +15,13 @@ type CommandRebooter struct {
 }
 
 // Reboot triggers the reboot command
-func (c CommandRebooter) Reboot() {
+func (c CommandRebooter) Reboot() error {
 	c.DelayReboot()
 	log.Infof("Invoking command: %s", c.RebootCommand)
 	if err := util.NewCommand(c.RebootCommand[0], c.RebootCommand[1:]...).Run(); err != nil {
-		log.Fatalf("Error invoking reboot command: %v", err)
+		return fmt.Errorf("Error invoking reboot command: %v", err)
 	}
+	return nil
 }
 
 // NewCommandRebooter is the constructor to create a CommandRebooter from a string not

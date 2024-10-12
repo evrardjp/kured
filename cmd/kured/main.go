@@ -724,7 +724,11 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 
 			log.Infof("Triggering reboot for node %v", nodeID)
 
-			rebooter.Reboot()
+			err = rebooter.Reboot()
+			if err != nil {
+				log.Fatalf("Unable to reboot node: %v", err)
+			}
+
 			for {
 				log.Infof("Waiting for reboot")
 				time.Sleep(time.Minute)
