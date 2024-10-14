@@ -10,13 +10,19 @@ import (
 	"regexp"
 )
 
+// Compile-time checks to ensure all types implement fmt.Stringer and isBlocked()
+var (
+	_ RebootBlocker = (*PrometheusBlockingChecker)(nil)
+	_ RebootBlocker = (*KubernetesBlockingChecker)(nil)
+)
+
 // RebootBlocked checks that a single block Checker
 // will block the reboot or not.
 func RebootBlocked(blockers ...RebootBlocker) (blocked bool, blockernames []string) {
 	for _, blocker := range blockers {
 		if blocker.IsBlocked() {
 			blocked = true
-			blockernames = append(blockernames, fmt.Sprintf("%T", blocker))
+			blockernames = append(blockernames, fmt.Sprintf("%s", blocker))
 		}
 	}
 	return
@@ -24,8 +30,12 @@ func RebootBlocked(blockers ...RebootBlocker) (blocked bool, blockernames []stri
 
 // RebootBlocker interface should be implemented by types
 // to know if their instantiations should block a reboot
+// As blockers are now exported as labels, the blocker must
+// implement a MetricLabel method giving a label for the
+// blocker, with low cardinality if possible.
 type RebootBlocker interface {
 	IsBlocked() bool
+	MetricLabel() string
 }
 
 // PrometheusBlockingChecker contains info for connecting
@@ -73,6 +83,12 @@ func (pb PrometheusBlockingChecker) IsBlocked() bool {
 	return false
 }
 
+// MetricLabel is used to give a fancier name
+// than the type to the label for rebootBlockedCounter
+func (pb PrometheusBlockingChecker) MetricLabel() string {
+	return "prometheus"
+}
+
 // IsBlocked for the KubernetesBlockingChecker will check if a pod, for the node, is preventing
 // the reboot. It will warn in the logs about blocking, but does not return an error.
 func (kb KubernetesBlockingChecker) IsBlocked() bool {
@@ -100,4 +116,8 @@ func (kb KubernetesBlockingChecker) IsBlocked() bool {
 		}
 	}
 	return false
+}
+
+func (kb KubernetesBlockingChecker) MetricLabel() string {
+	return "pod"
 }

@@ -91,6 +91,11 @@ var (
 		Name:      "reboot_required",
 		Help:      "OS requires reboot due to software updates.",
 	}, []string{"node"})
+	rebootBlockedCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Subsystem: "kured",
+		Name:      "reboot_blocked_reason",
+		Help:      "Reboot required was blocked by event.",
+	}, []string{"node", "reason"})
 )
 
 const (
@@ -107,7 +112,7 @@ const (
 )
 
 func init() {
-	prometheus.MustRegister(rebootRequiredGauge)
+	prometheus.MustRegister(rebootRequiredGauge, rebootBlockedCounter)
 }
 
 func main() {
@@ -649,8 +654,15 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 			}
 			// moved up, because we should not put an annotation "Going to be rebooting", if
 			// we know well that this won't reboot. TBD as some ppl might have another opinion.
-			if blocked, names := blockers.RebootBlocked(blockCheckers...); blocked {
-				log.Infof("Reboot blocked by %v", strings.Join(names, ", "))
+			var blocked bool
+			for _, blocker := range blockCheckers {
+				if blocker.IsBlocked() {
+					blocked = true
+					rebootBlockedCounter.WithLabelValues(nodeID, blocker.MetricLabel()).Inc()
+					log.Infof("Reboot blocked by %v", blocker.MetricLabel())
+				}
+			}
+			if blocked {
 				continue
 			}
 
