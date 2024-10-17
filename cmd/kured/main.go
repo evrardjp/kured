@@ -39,52 +39,6 @@ import (
 var (
 	version = "unreleased"
 
-	// Command line flags
-	forceReboot                     bool
-	drainDelay                      time.Duration
-	drainTimeout                    time.Duration
-	rebootDelay                     time.Duration
-	rebootMethod                    string
-	period                          time.Duration
-	metricsHost                     string
-	metricsPort                     int
-	drainGracePeriod                int
-	drainPodSelector                string
-	skipWaitForDeleteTimeoutSeconds int
-	dsNamespace                     string
-	dsName                          string
-	lockAnnotation                  string
-	lockTTL                         time.Duration
-	lockReleaseDelay                time.Duration
-	prometheusURL                   string
-	preferNoScheduleTaintName       string
-	alertFilter                     *regexp.Regexp
-	alertFilterMatchOnly            bool
-	alertFiringOnly                 bool
-	rebootSentinelFile              string
-	rebootSentinelCommand           string
-	notifyURL                       string
-	slackHookURL                    string
-	slackUsername                   string
-	slackChannel                    string
-	messageTemplateDrain            string
-	messageTemplateReboot           string
-	messageTemplateUncordon         string
-	podSelectors                    []string
-	rebootCommand                   string
-	rebootSignal                    int
-	logFormat                       string
-	preRebootNodeLabels             []string
-	postRebootNodeLabels            []string
-	nodeID                          string
-	concurrency                     int
-
-	rebootDays    []string
-	rebootStart   string
-	rebootEnd     string
-	timezone      string
-	annotateNodes bool
-
 	// Metrics
 	rebootRequiredGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Subsystem: "kured",
@@ -116,7 +70,53 @@ func init() {
 }
 
 func main() {
+	var (
+		// Command line flags
+		forceReboot                     bool
+		drainDelay                      time.Duration
+		drainTimeout                    time.Duration
+		rebootDelay                     time.Duration
+		rebootMethod                    string
+		period                          time.Duration
+		metricsHost                     string
+		metricsPort                     int
+		drainGracePeriod                int
+		drainPodSelector                string
+		skipWaitForDeleteTimeoutSeconds int
+		dsNamespace                     string
+		dsName                          string
+		lockAnnotation                  string
+		lockTTL                         time.Duration
+		lockReleaseDelay                time.Duration
+		prometheusURL                   string
+		preferNoScheduleTaintName       string
+		alertFilter                     *regexp.Regexp
+		alertFilterMatchOnly            bool
+		alertFiringOnly                 bool
+		rebootSentinelFile              string
+		rebootSentinelCommand           string
+		notifyURL                       string
+		slackHookURL                    string
+		slackUsername                   string
+		slackChannel                    string
+		messageTemplateDrain            string
+		messageTemplateReboot           string
+		messageTemplateUncordon         string
+		podSelectors                    []string
+		rebootCommand                   string
+		rebootSignal                    int
+		logFormat                       string
+		preRebootNodeLabels             []string
+		postRebootNodeLabels            []string
+		nodeID                          string
+		concurrency                     int
 
+		rebootDays    []string
+		rebootStart   string
+		rebootEnd     string
+		timezone      string
+		annotateNodes bool
+	)
 	flag.StringVar(&nodeID, "node-id", "",
 		"node name kured runs on, should be passed down from spec.nodeName via KURED_NODE_ID environment variable")
 	flag.BoolVar(&forceReboot, "force-reboot", false,
@@ -631,6 +631,8 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 
 			// Regardless or not we are holding the lock
 			// The node should not say it's still in progress if the reboot is done
+			// Maybe we should also make annotateNodes mandatory, as it would allow
+			// us to change how we deal with locks, and reduce code further.
 			if annotateNodes {
 				if _, ok := node.Annotations[KuredRebootInProgressAnnotation]; ok {
 					err := deleteNodeAnnotation(client, nodeID, KuredRebootInProgressAnnotation)
