@@ -27,14 +27,25 @@ func (c CommandRebooter) Reboot() error {
 // NewCommandRebooter is the constructor to create a CommandRebooter from a string not
 // yet shell lexed. You can skip this constructor if you parse the data correctly first
 // when instantiating a CommandRebooter instance.
-func NewCommandRebooter(rebootCommand string, rebootDelay time.Duration) *CommandRebooter {
+func NewCommandRebooter(rebootCommand string, rebootDelay time.Duration, privileged bool, pid int) *CommandRebooter {
 	cmd, err := shlex.Split(rebootCommand)
 	if err != nil {
 		log.Fatalf("Error parsing provided reboot command: %v", err)
 	}
 
+	if privileged {
+		if pid < 1 {
+			log.Fatalf("Incorrect PID number")
+		}
+		return &CommandRebooter{
+			RebootCommand: util.PrivilegedHostCommand(pid, cmd),
+			GenericRebooter: GenericRebooter{
+				RebootDelay: rebootDelay,
+			},
+		}
+	}
 	return &CommandRebooter{
-		RebootCommand: util.PrivilegedHostCommand(1, cmd),
+		RebootCommand: cmd,
 		GenericRebooter: GenericRebooter{
 			RebootDelay: rebootDelay,
 		},

@@ -250,7 +250,7 @@ func main() {
 	switch {
 	case rebootMethod == "command":
 		log.Infof("Reboot command: %s (delayed by %ss)", rebootCommand, rebootDelay)
-		rebooter = reboot.NewCommandRebooter(rebootCommand, rebootDelay)
+		rebooter = reboot.NewCommandRebooter(rebootCommand, rebootDelay, true, 1)
 	case rebootMethod == "signal":
 		log.Infof("Reboot signal: %v (delayed by %ss)", rebootSignal, rebootDelay)
 		rebooter = reboot.NewSignalRebooter(rebootSignal, rebootDelay)
