@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kubereboot/kured/internal"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,7 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	kubectldrain "k8s.io/kubectl/pkg/drain"
 )
 
 var (
@@ -419,70 +419,6 @@ func stripQuotes(str string) string {
 	return str
 }
 
-func drain(client *kubernetes.Clientset, node *v1.Node) error {
-	nodename := node.GetName()
-
-	if preRebootNodeLabels != nil {
-		updateNodeLabels(client, node, preRebootNodeLabels)
-	}
-
-	if drainDelay > 0 {
-		log.Infof("Delaying drain for %v", drainDelay)
-		time.Sleep(drainDelay)
-	}
-
-	log.Infof("Draining node %s", nodename)
-
-	if notifyURL != "" {
-		if err := shoutrrr.Send(notifyURL, fmt.Sprintf(messageTemplateDrain, nodename)); err != nil {
-			log.Warnf("Error notifying: %v", err)
-		}
-	}
-
-	drainer := &kubectldrain.Helper{
-		Client:                          client,
-		Ctx:                             context.Background(),
-		GracePeriodSeconds:              drainGracePeriod,
-		PodSelector:                     drainPodSelector,
-		SkipWaitForDeleteTimeoutSeconds: skipWaitForDeleteTimeoutSeconds,
-		Force:                           true,
-		DeleteEmptyDirData:              true,
-		IgnoreAllDaemonSets:             true,
-		ErrOut:                          os.Stderr,
-		Out:                             os.Stdout,
-		Timeout:                         drainTimeout,
-	}
-
-	if err := kubectldrain.RunCordonOrUncordon(drainer, node, true); err != nil {
-		log.Errorf("Error cordonning %s: %v", nodename, err)
-		return err
-	}
-
-	if err := kubectldrain.RunNodeDrain(drainer, nodename); err != nil {
-		log.Errorf("Error draining %s: %v", nodename, err)
-		return err
-	}
-	return nil
-}
-
-func uncordon(client *kubernetes.Clientset, node *v1.Node) error {
-	nodename := node.GetName()
-	log.Infof("Uncordoning node %s", nodename)
-	drainer := &kubectldrain.Helper{
-		Client: client,
-		ErrOut: os.Stderr,
-		Out:    os.Stdout,
-		Ctx:    context.Background(),
-	}
-	if err := kubectldrain.RunCordonOrUncordon(drainer, node, false); err != nil {
-		log.Fatalf("Error uncordonning %s: %v", nodename, err)
-		return err
-	} else if postRebootNodeLabels != nil {
-		updateNodeLabels(client, node, postRebootNodeLabels)
-	}
-	return nil
-}
-
 func addNodeAnnotations(client *kubernetes.Clientset, nodeID string, annotations map[string]string) error {
 	node, err := client.CoreV1().Nodes().Get(context.TODO(), nodeID, metav1.GetOptions{})
 	if err != nil {
@@ -527,40 +463,11 @@ func deleteNodeAnnotation(client *kubernetes.Clientset, nodeID, key string) erro
 	return nil
 }
 
-func updateNodeLabels(client *kubernetes.Clientset, node *v1.Node, labels []string) {
-	labelsMap := make(map[string]string)
-	for _, label := range labels {
-		k := strings.Split(label, "=")[0]
-		v := strings.Split(label, "=")[1]
-		labelsMap[k] = v
-		log.Infof("Updating node %s label: %s=%s", node.GetName(), k, v)
-	}
-
-	bytes, err := json.Marshal(map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"labels": labelsMap,
-		},
-	})
-	if err != nil {
-		log.Fatalf("Error marshalling node object into JSON: %v", err)
-	}
-
-	_, err = client.CoreV1().Nodes().Patch(context.TODO(), node.GetName(), types.StrategicMergePatchType, bytes, metav1.PatchOptions{})
-	if err != nil {
-		var labelsErr string
-		for _, label := range labels {
-			k := strings.Split(label, "=")[0]
-			v := strings.Split(label, "=")[1]
-			labelsErr += fmt.Sprintf("%s=%s ", k, v)
-		}
-		log.Errorf("Error updating node labels %s via k8s API: %v", labelsErr, err)
-	}
-}
-
 func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.Checker, window *timewindow.TimeWindow, lock locks.Lock, client *kubernetes.Clientset, blockCheckers []blockers.RebootBlocker, period time.Duration) {
 
 	preferNoScheduleTaint := taints.New(client, nodeID, preferNoScheduleTaintName, v1.TaintEffectPreferNoSchedule)
 
+	kuredNode := internal.NewNode(nodeID, client)
 	// No reason to delay the first ticks.
 	// On top of it, we used to leak a goroutine, which was never garbage collected.
 	// Starting on go1.23, with Tick, we would have that goroutine garbage collected.
@@ -577,7 +484,7 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 			preferNoScheduleTaint.Disable()
 
 			// Test API server first. If cannot get node, we should not do anything.
-			node, err := client.CoreV1().Nodes().Get(context.TODO(), nodeID, metav1.GetOptions{})
+			node, err := kuredNode.K8SGet()
 			if err != nil {
 				log.Infof("Error retrieving node object via k8s API: %v", err)
 				continue
@@ -600,7 +507,7 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 
 			// reconcile node compared to previous data (fetched from lock)
 			if node.Spec.Unschedulable != wasUnschedulable && !wasUnschedulable {
-				err = uncordon(client, node)
+				err = kuredNode.Uncordon(postRebootNodeLabels...)
 				if err != nil {
 					log.Infof("Unable to uncordon %s: %v, will continue to hold lock and retry uncordon", node.GetName(), err)
 					continue
@@ -693,7 +600,7 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 				continue
 			}
 
-			err = drain(client, node)
+			err = kuredNode.Drain(drainDelay, drainGracePeriod, drainPodSelector, skipWaitForDeleteTimeoutSeconds, drainTimeout, preRebootNodeLabels)
 			if err != nil {
 				if !forceReboot {
 					log.Infof("Unable to cordon or drain %s: %v, will force-reboot by releasing lock and uncordon until next success", node.GetName(), err)
@@ -702,7 +609,7 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 						log.Infof("Error in best-effort releasing lock: %v", err)
 					}
 					log.Infof("Performing a best-effort uncordon after failed cordon and drain")
-					uncordon(client, node)
+					kuredNode.Uncordon(postRebootNodeLabels...)
 					continue
 				}
 			}
