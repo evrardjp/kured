@@ -3,11 +3,9 @@ package blockers
 import (
 	"context"
 	"fmt"
-	"github.com/kubereboot/kured/pkg/alerts"
 	log "github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"regexp"
 )
 
 // Compile-time checks to ensure all types implement fmt.Stringer and isBlocked()
@@ -38,20 +36,6 @@ type RebootBlocker interface {
 	MetricLabel() string
 }
 
-// PrometheusBlockingChecker contains info for connecting
-// to prometheus, and can give info about whether a reboot should be blocked
-type PrometheusBlockingChecker struct {
-	// prometheusClient to make prometheus-go-client and api config available
-	// into the PrometheusBlockingChecker struct
-	PromClient *alerts.PromClient
-	// regexp used to get alerts
-	Filter *regexp.Regexp
-	// bool to indicate if only firing alerts should be considered
-	FiringOnly bool
-	// bool to indicate that we're only blocking on alerts which match the filter
-	FilterMatchOnly bool
-}
-
 // KubernetesBlockingChecker contains info for connecting
 // to k8s, and can give info about whether a reboot should be blocked
 type KubernetesBlockingChecker struct {
@@ -60,33 +44,6 @@ type KubernetesBlockingChecker struct {
 	Nodename string
 	// lised used to filter pods (podSelector)
 	Filter []string
-}
-
-// IsBlocked for the prometheus will check if there are active alerts matching
-// the arguments given into promclient which would actively block the reboot.
-// As of today, no blocker information is shared as a return of the method,
-// and the information is simply logged.
-func (pb PrometheusBlockingChecker) IsBlocked() bool {
-	alertNames, err := pb.PromClient.ActiveAlerts(pb.Filter, pb.FiringOnly, pb.FilterMatchOnly)
-	if err != nil {
-		log.Warnf("Reboot blocked: prometheus query error: %v", err)
-		return true
-	}
-	count := len(alertNames)
-	if count > 10 {
-		alertNames = append(alertNames[:10], "...")
-	}
-	if count > 0 {
-		log.Warnf("Reboot blocked: %d active alerts: %v", count, alertNames)
-		return true
-	}
-	return false
-}
-
-// MetricLabel is used to give a fancier name
-// than the type to the label for rebootBlockedCounter
-func (pb PrometheusBlockingChecker) MetricLabel() string {
-	return "prometheus"
 }
 
 // IsBlocked for the KubernetesBlockingChecker will check if a pod, for the node, is preventing

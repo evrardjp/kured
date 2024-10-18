@@ -28,7 +28,6 @@ import (
 	kubectldrain "k8s.io/kubectl/pkg/drain"
 
 	shoutrrr "github.com/containrrr/shoutrrr"
-	"github.com/kubereboot/kured/pkg/alerts"
 	"github.com/kubereboot/kured/pkg/daemonsetlock"
 	"github.com/kubereboot/kured/pkg/reboot"
 	"github.com/kubereboot/kured/pkg/taints"
@@ -292,15 +291,9 @@ func main() {
 	}
 	lock := daemonsetlock.New(client, nodeID, dsNamespace, dsName, lockAnnotation, lockTTL, concurrency, lockReleaseDelay)
 
-	// instantiate prometheus client
-	promClient, err := alerts.NewPromClient(papi.Config{Address: prometheusURL})
-	if err != nil {
-		log.Fatal("Unable to create prometheus client: ", err)
-	}
-
 	var blockCheckers []blockers.RebootBlocker
 	if prometheusURL != "" {
-		blockCheckers = append(blockCheckers, blockers.PrometheusBlockingChecker{PromClient: promClient, Filter: alertFilter, FiringOnly: alertFiringOnly, FilterMatchOnly: alertFilterMatchOnly})
+		blockCheckers = append(blockCheckers, blockers.NewPrometheusBlockingChecker(papi.Config{Address: prometheusURL}, alertFilter, alertFiringOnly, alertFilterMatchOnly))
 	}
 	if podSelectors != nil {
 		blockCheckers = append(blockCheckers, blockers.KubernetesBlockingChecker{Client: client, Nodename: nodeID, Filter: podSelectors})
