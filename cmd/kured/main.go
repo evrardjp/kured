@@ -17,7 +17,7 @@ import (
 	"github.com/containrrr/shoutrrr"
 	"github.com/kubereboot/kured/pkg/blockers"
 	"github.com/kubereboot/kured/pkg/checkers"
-	"github.com/kubereboot/kured/pkg/daemonsetlock"
+	"github.com/kubereboot/kured/pkg/locks"
 	"github.com/kubereboot/kured/pkg/reboot"
 	"github.com/kubereboot/kured/pkg/taints"
 	"github.com/kubereboot/kured/pkg/timewindow"
@@ -288,7 +288,7 @@ func main() {
 	} else {
 		log.Info("Lock release delay not set, lock will be released immediately after rebooting")
 	}
-	lock := daemonsetlock.New(client, nodeID, dsNamespace, dsName, lockAnnotation, lockTTL, concurrency, lockReleaseDelay)
+	lock := locks.New(client, nodeID, dsNamespace, dsName, lockAnnotation, lockTTL, concurrency, lockReleaseDelay)
 
 	var blockCheckers []blockers.RebootBlocker
 	if prometheusURL != "" {
@@ -557,7 +557,7 @@ func updateNodeLabels(client *kubernetes.Clientset, node *v1.Node, labels []stri
 	}
 }
 
-func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.Checker, window *timewindow.TimeWindow, lock daemonsetlock.Lock, client *kubernetes.Clientset, blockCheckers []blockers.RebootBlocker, period time.Duration) {
+func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.Checker, window *timewindow.TimeWindow, lock locks.Lock, client *kubernetes.Clientset, blockCheckers []blockers.RebootBlocker, period time.Duration) {
 
 	preferNoScheduleTaint := taints.New(client, nodeID, preferNoScheduleTaintName, v1.TaintEffectPreferNoSchedule)
 
@@ -665,7 +665,7 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 				continue
 			}
 			// nodeMeta contains the node Metadata that should be included in the lock
-			nodeMeta := daemonsetlock.NodeMeta{Unschedulable: node.Spec.Unschedulable}
+			nodeMeta := locks.NodeMeta{Unschedulable: node.Spec.Unschedulable}
 
 			var timeNowString string
 			if annotateNodes {
