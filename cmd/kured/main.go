@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/kubereboot/kured/pkg/blockers"
-	"github.com/kubereboot/kured/pkg/checkers"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,7 +14,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containrrr/shoutrrr"
+	"github.com/kubereboot/kured/pkg/blockers"
+	"github.com/kubereboot/kured/pkg/checkers"
+	"github.com/kubereboot/kured/pkg/daemonsetlock"
+	"github.com/kubereboot/kured/pkg/reboot"
+	"github.com/kubereboot/kured/pkg/taints"
+	"github.com/kubereboot/kured/pkg/timewindow"
 	papi "github.com/prometheus/client_golang/api"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 	flag "github.com/spf13/pflag"
 	v1 "k8s.io/api/core/v1"
@@ -26,13 +32,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	kubectldrain "k8s.io/kubectl/pkg/drain"
-
-	shoutrrr "github.com/containrrr/shoutrrr"
-	"github.com/kubereboot/kured/pkg/daemonsetlock"
-	"github.com/kubereboot/kured/pkg/reboot"
-	"github.com/kubereboot/kured/pkg/taints"
-	"github.com/kubereboot/kured/pkg/timewindow"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 var (
@@ -684,7 +683,7 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 				}
 			}
 
-			// Prefer to not schedule pods onto this node to avoid draing the same pod multiple times.
+			// Prefer to not schedule pods onto this node to avoid draining the same pod multiple times.
 			preferNoScheduleTaint.Enable()
 
 			// We might want to add jitter here
