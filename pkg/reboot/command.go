@@ -3,8 +3,8 @@ package reboot
 import (
 	"fmt"
 	"github.com/google/shlex"
-	"github.com/kubereboot/kured/pkg/util"
 	log "github.com/sirupsen/logrus"
+	"os/exec"
 	"time"
 )
 
@@ -17,9 +17,21 @@ type CommandRebooter struct {
 // Reboot triggers the reboot command
 func (c CommandRebooter) Reboot() error {
 	c.DelayReboot()
+
 	log.Infof("Invoking command: %s", c.RebootCommand)
-	if err := util.NewCommand(c.RebootCommand[0], c.RebootCommand[1:]...).Run(); err != nil {
-		return fmt.Errorf("Error invoking reboot command: %v", err)
+	cmd := exec.Command(c.RebootCommand[0], c.RebootCommand[1:]...)
+	cmd.Stdout = log.NewEntry(log.StandardLogger()).
+		WithField("cmd", cmd.Args[0]).
+		WithField("std", "out").
+		WriterLevel(log.InfoLevel)
+
+	cmd.Stderr = log.NewEntry(log.StandardLogger()).
+		WithField("cmd", cmd.Args[0]).
+		WithField("std", "err").
+		WriterLevel(log.WarnLevel)
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("error invoking reboot command %v", err)
 	}
 	return nil
 }
@@ -37,8 +49,11 @@ func NewCommandRebooter(rebootCommand string, rebootDelay time.Duration, privile
 		if pid < 1 {
 			log.Fatalf("Incorrect PID number")
 		}
+		cmdline := []string{"/usr/bin/nsenter", fmt.Sprintf("-m/proc/%d/ns/mnt", pid), "--"}
+		cmdline = append(cmdline, cmd...)
+
 		return &CommandRebooter{
-			RebootCommand: util.PrivilegedHostCommand(pid, cmd),
+			RebootCommand: cmdline,
 			GenericRebooter: GenericRebooter{
 				RebootDelay: rebootDelay,
 			},

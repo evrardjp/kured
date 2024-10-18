@@ -1,8 +1,8 @@
 package checkers
 
 import (
+	"fmt"
 	"github.com/google/shlex"
-	"github.com/kubereboot/kured/pkg/util"
 	log "github.com/sirupsen/logrus"
 	"os"
 	"os/exec"
@@ -58,11 +58,21 @@ type CommandChecker struct {
 func (rc CommandChecker) CheckRebootRequired() bool {
 	var cmdline []string
 	if rc.Privileged {
-		cmdline = util.PrivilegedHostCommand(rc.NamespacePid, rc.CheckCommand)
+		cmdline = []string{"/usr/bin/nsenter", fmt.Sprintf("-m/proc/%d/ns/mnt", rc.NamespacePid), "--"}
+		cmdline = append(cmdline, rc.CheckCommand...)
 	} else {
 		cmdline = rc.CheckCommand
 	}
-	cmd := util.NewCommand(cmdline[0], cmdline[1:]...)
+	cmd := exec.Command(cmdline[0], cmdline[1:]...)
+	cmd.Stdout = log.NewEntry(log.StandardLogger()).
+		WithField("cmd", cmd.Args[0]).
+		WithField("std", "out").
+		WriterLevel(log.InfoLevel)
+
+	cmd.Stderr = log.NewEntry(log.StandardLogger()).
+		WithField("cmd", cmd.Args[0]).
+		WithField("std", "err").
+		WriterLevel(log.WarnLevel)
 	if err := cmd.Run(); err != nil {
 		switch err := err.(type) {
 		case *exec.ExitError:
