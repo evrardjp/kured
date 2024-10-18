@@ -12,29 +12,33 @@ import (
 	"time"
 )
 
+var (
+	_ RebootBlocker = (*PrometheusBlockingChecker)(nil)
+)
+
 // PrometheusBlockingChecker contains info for connecting
 // to prometheus, and can give info about whether a reboot should be blocked
 type PrometheusBlockingChecker struct {
-	PromConfig papi.Config
+	promConfig papi.Config
 	// regexp used to get alerts
-	Filter *regexp.Regexp
+	filter *regexp.Regexp
 	// bool to indicate if only firing alerts should be considered
-	FiringOnly bool
+	firingOnly bool
 	// bool to indicate that we're only blocking on alerts which match the filter
-	FilterMatchOnly bool
-	// storing the PromClient
-	PromClient papi.Client
+	filterMatchOnly bool
+	// storing the promClient
+	promClient papi.Client
 }
 
 func NewPrometheusBlockingChecker(config papi.Config, alertFilter *regexp.Regexp, firingOnly bool, filterMatchOnly bool) PrometheusBlockingChecker {
 	promClient, _ := papi.NewClient(config)
 
 	return PrometheusBlockingChecker{
-		PromConfig:      config,
-		Filter:          alertFilter,
-		FiringOnly:      firingOnly,
-		FilterMatchOnly: filterMatchOnly,
-		PromClient:      promClient,
+		promConfig:      config,
+		filter:          alertFilter,
+		firingOnly:      firingOnly,
+		filterMatchOnly: filterMatchOnly,
+		promClient:      promClient,
 	}
 }
 
@@ -72,7 +76,7 @@ func (pb PrometheusBlockingChecker) MetricLabel() string {
 // block-list and will NOT block rebooting. query by includeLabel means,
 // if the query finds an alert, it will include it to the block-list, and it WILL block rebooting.
 func (pb PrometheusBlockingChecker) ActiveAlerts() ([]string, error) {
-	api := v1.NewAPI(pb.PromClient)
+	api := v1.NewAPI(pb.promClient)
 
 	// get all alerts from prometheus
 	value, _, err := api.Query(context.Background(), "ALERTS", time.Now())
@@ -85,7 +89,7 @@ func (pb PrometheusBlockingChecker) ActiveAlerts() ([]string, error) {
 			activeAlertSet := make(map[string]bool)
 			for _, sample := range vector {
 				if alertName, isAlert := sample.Metric[model.AlertNameLabel]; isAlert && sample.Value != 0 {
-					if matchesRegex(pb.Filter, string(alertName), pb.FilterMatchOnly) && (!pb.FiringOnly || sample.Metric["alertstate"] == "firing") {
+					if matchesRegex(pb.filter, string(alertName), pb.filterMatchOnly) && (!pb.firingOnly || sample.Metric["alertstate"] == "firing") {
 						activeAlertSet[string(alertName)] = true
 					}
 				}

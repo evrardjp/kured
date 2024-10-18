@@ -296,7 +296,7 @@ func main() {
 		blockCheckers = append(blockCheckers, blockers.NewPrometheusBlockingChecker(papi.Config{Address: prometheusURL}, alertFilter, alertFiringOnly, alertFilterMatchOnly))
 	}
 	if podSelectors != nil {
-		blockCheckers = append(blockCheckers, blockers.KubernetesBlockingChecker{Client: client, Nodename: nodeID, Filter: podSelectors})
+		blockCheckers = append(blockCheckers, blockers.NewKubernetesBlockingChecker(client, nodeID, podSelectors))
 	}
 
 	go rebootAsRequired(nodeID, rebooter, checker, window, lock, client, blockCheckers, period)
