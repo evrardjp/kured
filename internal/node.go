@@ -25,13 +25,7 @@ type KuredNode struct {
 func NewNode(name string, k8sClientSet *kubernetes.Clientset) *KuredNode {
 	return &KuredNode{name: name, k8sClientSet: k8sClientSet}
 }
-func (n *KuredNode) Name() string {
-	return n.name
-}
 
-func (n *KuredNode) ReadLabels() map[string]string {
-	return n.k8sNodeObject.ObjectMeta.Labels
-}
 func (n *KuredNode) UpdateLabels(labels []string) {
 	labelsMap := make(map[string]string)
 	for _, label := range labels {
@@ -60,10 +54,6 @@ func (n *KuredNode) UpdateLabels(labels []string) {
 		}
 		log.Errorf("Error updating node labels %s via k8s API: %v", labelsErr, err)
 	}
-}
-
-func (n *KuredNode) Annotations() map[string]string {
-	return n.k8sNodeObject.ObjectMeta.Annotations
 }
 
 func (n *KuredNode) Get() (*v1.Node, error) {

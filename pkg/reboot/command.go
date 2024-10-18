@@ -40,9 +40,10 @@ func (c CommandRebooter) Reboot() error {
 // yet shell lexed. You can skip this constructor if you parse the data correctly first
 // when instantiating a CommandRebooter instance.
 func NewCommandRebooter(rebootCommand string, rebootDelay time.Duration, privileged bool, pid int) *CommandRebooter {
+	// TODO: Ensure rebootCommand is never empty.
 	cmd, err := shlex.Split(rebootCommand)
 	if err != nil {
-		log.Fatalf("Error parsing provided reboot command: %v", err)
+		log.Fatalf("Error parsing provided reboot command %s due to %v", rebootCommand, err)
 	}
 
 	if privileged {
