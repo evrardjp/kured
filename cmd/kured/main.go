@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	_ "net/http/pprof"
 
 	papi "github.com/prometheus/client_golang/api"
 	log "github.com/sirupsen/logrus"
