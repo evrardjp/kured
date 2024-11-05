@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	_ "net/http/pprof"
 	"net/url"
 	"os"
 	"reflect"
