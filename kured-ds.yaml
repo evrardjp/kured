@@ -4,6 +4,8 @@ kind: DaemonSet
 metadata:
   name: kured # Must match `--ds-name`
   namespace: kube-system # Must match `--ds-namespace`
+  labels:
+    app: kured
 spec:
   selector:
     matchLabels:

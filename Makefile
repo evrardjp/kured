@@ -28,19 +28,25 @@ kured-release-snapshot:
 	goreleaser release --clean --snapshot
 
 image: kured
-	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/kured:$(VERSION) .
+	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/kured:$(VERSION) -f Dockerfile.kured .
+	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/node-reboot-detector:$(VERSION) -f Dockerfile.node-reboot-detector .
+	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/node-reboot-reporter:$(VERSION) -f Dockerfile.node-reboot-reporter .
 
 dev-image: kured
-	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/kubereboot/kured:dev .
+	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/kubereboot/kured:dev -f Dockerfile.kured .
+	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/kubereboot/node-reboot-detector:dev -f Dockerfile.node-reboot-detector .
+	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/kubereboot/node-reboot-reporter:dev -f Dockerfile.node-reboot-reporter .
 
 
 e2e-test: dev-image
 	echo "Running ALL go tests"
 	go test -count=1 -v --parallel 4 ./... $(ARGS)
 
+# todo: improve minikube handling
 minikube-publish: image
 	$(SUDO) docker save ghcr.io/$(DH_ORG)/kured | (eval $$(minikube docker-env) && docker load)
 
+# todo: update manifest to add other releasable images
 manifest:
 	sed -i "s#image: ghcr.io/.*kured.*#image: ghcr.io/$(DH_ORG)/kured:$(VERSION)#g" kured-ds.yaml
 	sed -i "s#image: ghcr.io/.*kured.*#image: ghcr.io/$(DH_ORG)/kured:$(VERSION)#g" kured-ds-signal.yaml
