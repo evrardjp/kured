@@ -285,3 +285,67 @@ func TestE2EPodBlocker(t *testing.T) {
 	}
 
 }
+
+func TestE2EDrainFailureImmediateUncordon(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
+	kindClusterName := fmt.Sprintf("kured-e2e-drain-failure-uncordon-%v", strconv.Itoa(rand.Intn(100)))
+	kindContext := fmt.Sprintf("kind-%v", kindClusterName)
+	k := NewKindTester(t, KindVersionImages["next"],
+		WithClusterName(kindClusterName),
+		WithWorkerNodes(1),
+		PreloadImages(kuredDevImage),
+		Deploy("../../kured-rbac.yaml"),
+	)
+	defer k.FlushLog()
+
+	kuredDSFile := filepath.Join(k.artifactFolder, kuredDSManifestFilename)
+
+	// Patch to add lock-release-delay to test that uncordon happens before the delay
+	// Also add drain-timeout so drain fails quickly instead of retrying forever
+	var lockReleaseDelayPatch = []map[string]interface{}{
+		{
+			"op":    "add",
+			"path":  "/spec/template/spec/containers/0/command/-",
+			"value": "--lock-release-delay=30s",
+		},
+		{
+			"op":    "add",
+			"path":  "/spec/template/spec/containers/0/command/-",
+			"value": "--drain-timeout=10s",
+		},
+	}
+	pkds, err := PatchDaemonSet(NewKuredDaemonSet(), KuredDSSignalPatch, lockReleaseDelayPatch)
+	if err != nil {
+		t.Fatalf("failed to patch DaemonSet: %v", err)
+	}
+	if err := SaveDaemonsetToDisk(pkds, kuredDSFile); err != nil {
+		t.Fatalf("failed to save patched DaemonSet: %v", err)
+	}
+	Deploy(kuredDSFile)(k)
+
+	if err := k.Prepare(); err != nil {
+		t.Fatalf("Error creating cluster %v", err)
+	}
+
+	defer func(k *E2ETest) {
+		err := k.Destroy()
+		if err != nil {
+			t.Fatalf("Error destroying cluster %v", err)
+		}
+	}(k)
+	if err := k.RunCmdWithDefaultTimeout("bash", "testdata/create-blocking-pods.sh", kindContext); err != nil {
+		t.Fatalf("failed to create blocking pods: %v", err)
+	}
+
+	if err := k.RunCmdWithDefaultTimeout("bash", "testdata/create-reboot-sentinels.sh", kindContext); err != nil {
+		t.Fatalf("failed to create sentinels: %v", err)
+	}
+
+	if err := k.RunCmdWithDefaultTimeout("bash", "testdata/drain-failure-immediate-uncordon.sh", kindContext); err != nil {
+		t.Fatalf("drain failure immediate uncordon test failed: %v", err)
+	}
+
+}

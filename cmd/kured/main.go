@@ -407,21 +407,23 @@ func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.
 
 			if err != nil {
 				if !forceReboot {
-					slog.Debug(fmt.Sprintf("Unable to cordon or drain %s: %v, will force-reboot by releasing lock and uncordon until next success", node.GetName(), err), "node", nodeID, "error", err)
-					err = lock.Release()
-					if err != nil {
-						slog.Debug(fmt.Sprintf("error in best-effort releasing lock: %v", err), "node", nodeID, "error", err)
-					}
-					// this is important -- if the next info not shown, it means that (in a normal or non-force reboot case)
-					// the drain was in error and the lock was NOT released.
-					// If shown, it is helping understand the "uncordoning".
-					// If the admin seems the node as cordoned even after trying a best-effort uncordon,
-					// the admin needs to take action (especially if the node was previously cordoned before the maintenance!)
+					slog.Debug(fmt.Sprintf("Unable to cordon or drain %s: %v, will uncordon immediately and release lock", node.GetName(), err), "node", nodeID, "error", err)
+
+					// Uncordon immediately to allow workloads to be rescheduled without waiting for lock release delay
+					// This is important -- if the node was previously cordoned before the maintenance,
+					// the admin needs to be aware that kured will uncordon it after a failed drain.
 					slog.Info("Performing a best-effort uncordon after failed cordon and drain", "node", nodeID)
 					err := k8soperations.Uncordon(client, node, notifier, postRebootNodeLabels, messageTemplateUncordon)
 					if err != nil {
 						slog.Info("Failed to do best-effort uncordon", "node", nodeID, "error", err)
 					}
+
+					// Release lock after uncordon (which may include a delay configured via --lock-release-delay)
+					err = lock.Release()
+					if err != nil {
+						slog.Debug(fmt.Sprintf("error in best-effort releasing lock: %v", err), "node", nodeID, "error", err)
+					}
+
 					continue
 				}
 			}
