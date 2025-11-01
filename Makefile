@@ -31,11 +31,13 @@ image: kured
 	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/kured:$(VERSION) -f Dockerfile.kured .
 	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/node-reboot-detector:$(VERSION) -f Dockerfile.node-reboot-detector .
 	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/node-reboot-reporter:$(VERSION) -f Dockerfile.node-reboot-reporter .
+	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/node-maintenance-scheduler:$(VERSION) -f Dockerfile.node-maintenance-scheduler .
 
 dev-image: kured
 	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/kubereboot/kured:dev -f Dockerfile.kured .
 	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/kubereboot/node-reboot-detector:dev -f Dockerfile.node-reboot-detector .
 	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/kubereboot/node-reboot-reporter:dev -f Dockerfile.node-reboot-reporter .
+	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/kubereboot/node-maintenance-scheduler:dev -f Dockerfile.node-maintenance-scheduler .
 
 
 e2e-test: dev-image
