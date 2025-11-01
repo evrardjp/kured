@@ -4,17 +4,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	cronlib "github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
@@ -23,68 +21,23 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
-var (
-	metrics = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{Name: "kured_node_maintenance_status", Help: "1 if maintenance in progress for the node and window, 0 otherwise"},
-		[]string{"maintenance_window", "node"},
-	)
-)
-
-// maintenanceWindow parsed from ConfigMap
 type maintenanceWindow struct {
 	name         string
-	reason       string
 	cronExpr     string
 	duration     time.Duration
 	nodeSelector string
-	concurrency  int // kept for info; global concurrency enforced separately
 	schedule     cronlib.Schedule
 }
 
-// global state
-type assignment struct {
-	window string
-	node   corev1.Node
-}
-
 type globalState struct {
-	inProgress map[string]assignment // nodeName -> assignment
-	sem        *Semaphore            // global semaphore
+	pending []string            // nodes waiting to start maintenance
+	active  map[string]struct{} // nodes currently in maintenance
 }
 
-// simple counting semaphore with TryAcquire/Release (test-friendly)
-type Semaphore struct {
-	ch chan struct{}
-}
-
-func NewSemaphore(n int) *Semaphore {
-	if n <= 0 {
-		n = 1
-	}
-	return &Semaphore{ch: make(chan struct{}, n)}
-}
-
-func (s *Semaphore) TryAcquire() bool {
-	select {
-	case s.ch <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *Semaphore) Release() {
-	select {
-	case <-s.ch:
-	default:
-	}
-}
-
-// nodeOps abstraction for testability
 type nodeOps interface {
 	ListNodes(ctx context.Context, selector string) ([]corev1.Node, error)
-	SetNodeCondition(ctx context.Context, nodeName string, condType string, status corev1.ConditionStatus, reason string) error
 	GetNode(ctx context.Context, nodeName string) (*corev1.Node, error)
+	SetNodeCondition(ctx context.Context, nodeName string, condType string, status corev1.ConditionStatus, reason string) error
 }
 
 type realNodeOps struct {
@@ -138,89 +91,83 @@ func (r *realNodeOps) SetNodeCondition(ctx context.Context, nodeName string, con
 	})
 }
 
-// ReconcileGlobal builds a global view: for each active window collect candidate nodes,
-// deduplicate nodes (node -> first matching window by iteration order), and assign up to global slots.
-func ReconcileGlobal(ctx context.Context, now time.Time, ops nodeOps, windows []*maintenanceWindow, gs *globalState) error {
-	// mark which windows are active
-	active := map[string]*maintenanceWindow{}
+func enqueueCandidates(ctx context.Context, ops nodeOps, windows []*maintenanceWindow, gs *globalState) error {
+	seen := map[string]struct{}{} // avoid duplicates
+	for n := range gs.active {
+		seen[n] = struct{}{}
+	}
+	for _, p := range gs.pending {
+		seen[p] = struct{}{}
+	}
+
+	now := time.Now()
 	for _, w := range windows {
-		if windowActive(w, now) {
-			active[w.name] = w
+		if !windowActive(w, now) {
+			continue
 		}
-	}
-
-	// release assignments whose window ended
-	for nodeName, a := range gs.inProgress {
-		if _, winStillActive := active[a.window]; !winStillActive {
-			_ = ops.SetNodeCondition(ctx, nodeName, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "window-ended")
-			metrics.WithLabelValues(a.window, nodeName).Set(0)
-			delete(gs.inProgress, nodeName)
-			gs.sem.Release()
-		}
-	}
-
-	// collect candidates per active window; deduplicate by node name picking first window encountered
-	candidates := map[string]*maintenanceWindow{} // nodeName -> window
-	for _, w := range active {
 		nodes, err := ops.ListNodes(ctx, w.nodeSelector)
 		if err != nil {
-			// best-effort: log and continue
-			fmt.Fprintf(os.Stderr, "list nodes for %s: %v\n", w.name, err)
-			continue
+			// If any error happened during any node listing,
+			// we can't be sure the list is complete or accurate.
+			// We should not continue to browse all windows and retry later to save the pain to the API server.
+			return fmt.Errorf("error list nodes while browsing maintenance window %s, %w", w.name, err)
 		}
 		for _, n := range nodes {
 			if !hasCondition(&n, "NeedsReboot", corev1.ConditionTrue) {
 				continue
 			}
-			if _, assigned := gs.inProgress[n.Name]; assigned {
-				continue // already in progress
+			if _, ok := seen[n.Name]; ok {
+				continue
 			}
-			if _, seen := candidates[n.Name]; seen {
-				continue // already claimed by another window (first-wins)
-			}
-			candidates[n.Name] = w
+			gs.pending = append(gs.pending, n.Name)
+			seen[n.Name] = struct{}{}
 		}
-	}
-
-	// assign up to global capacity
-	for nodeName, w := range candidates {
-		if !gs.sem.TryAcquire() {
-			break // global concurrency reached
-		}
-		// fetch node to set condition (or rely on candidate listing object if available in real code)
-		n, err := ops.GetNode(ctx, nodeName)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "get node %s: %v\n", nodeName, err)
-			gs.sem.Release()
-			continue
-		}
-		if err := ops.SetNodeCondition(ctx, nodeName, "kured.dev/UnderMaintenance", corev1.ConditionTrue, w.reason); err != nil {
-			fmt.Fprintf(os.Stderr, "set undermaintenance %s: %v\n", nodeName, err)
-			gs.sem.Release()
-			continue
-		}
-		gs.inProgress[nodeName] = assignment{window: w.name, node: *n}
-		metrics.WithLabelValues(w.name, nodeName).Set(1)
-		fmt.Printf("assigned node %s -> window %s\n", nodeName, w.name)
 	}
 	return nil
 }
 
+func processQueue(ctx context.Context, ops nodeOps, gs *globalState, globalConcurrency int) {
+	// process pending queue up to concurrency limit
+	for len(gs.active) < globalConcurrency && len(gs.pending) > 0 {
+		nodeName := gs.pending[0]
+		gs.pending = gs.pending[1:]
+
+		// verify node still needs maintenance
+		node, err := ops.GetNode(ctx, nodeName)
+		if err != nil {
+			if k8serrors.IsNotFound(err) {
+				// Node was deleted, skip it
+				fmt.Printf("skipping deleted node %s\n", nodeName)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "get node %s: %v\n", nodeName, err)
+			continue
+
+		}
+		if !hasCondition(node, "NeedsReboot", corev1.ConditionTrue) {
+			continue
+		}
+
+		if err := ops.SetNodeCondition(ctx, nodeName, "kured.dev/UnderMaintenance", corev1.ConditionTrue, ""); err != nil {
+			fmt.Fprintf(os.Stderr, "set undermaintenance %s: %v\n", nodeName, err)
+			continue
+		}
+
+		gs.active[nodeName] = struct{}{}
+		fmt.Printf("node %s -> maintenance started\n", nodeName)
+	}
+}
+
 func main() {
-	var kubeconfig, cmPrefix, metricsAddr, cmNamespace string
+	var kubeconfig, cmPrefix, cmNamespace string
 	var globalConcurrency int
+	var metricsAddr string // kept for parity; not used
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional kubeconfig")
 	flag.StringVar(&cmPrefix, "config-prefix", "kured-maintenance-", "configmap prefix")
-	flag.StringVar(&metricsAddr, "metrics-addr", ":9090", "metrics listen")
 	flag.StringVar(&cmNamespace, "namespace", "kube-system", "cm namespace")
 	flag.IntVar(&globalConcurrency, "global-concurrency", 10, "global max concurrent nodes in maintenance")
+	flag.StringVar(&metricsAddr, "metrics-addr", ":9090", "metrics listen (unused)")
 	flag.Parse()
-
-	prometheus.MustRegister(metrics)
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		_ = http.ListenAndServe(metricsAddr, nil)
-	}()
 
 	cfg, err := loadKubeConfig(kubeconfig)
 	if err != nil {
@@ -237,15 +184,15 @@ func main() {
 	}
 
 	gs := &globalState{
-		inProgress: map[string]assignment{},
-		sem:        NewSemaphore(globalConcurrency),
+		pending: []string{},
+		active:  map[string]struct{}{},
 	}
 
 	var mu sync.Mutex
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// watch nodes to free slots when NeedsReboot -> False
+	// Node watcher just needs to clear from the active set
 	go func() {
 		watcher, err := client.CoreV1().Nodes().Watch(ctx, metav1.ListOptions{})
 		if err != nil {
@@ -262,13 +209,11 @@ func main() {
 				continue
 			}
 			mu.Lock()
-			if a, present := gs.inProgress[n.Name]; present {
+			if _, present := gs.active[n.Name]; present {
 				if !hasCondition(n, "NeedsReboot", corev1.ConditionTrue) {
-					_ = ops.SetNodeCondition(context.Background(), n.Name, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "reboot-complete")
-					metrics.WithLabelValues(a.window, n.Name).Set(0)
-					delete(gs.inProgress, n.Name)
-					gs.sem.Release()
-					fmt.Printf("node %s left maintenance (reboot-complete)\n", n.Name)
+					_ = ops.SetNodeCondition(ctx, n.Name, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "")
+					delete(gs.active, n.Name)
+					fmt.Printf("node %s -> maintenance complete\n", n.Name)
 				}
 			}
 			mu.Unlock()
@@ -278,14 +223,19 @@ func main() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for now := range ticker.C {
+		_ = now // keep for potential time injection/tests
 		mu.Lock()
-		_ = ReconcileGlobal(ctx, now, ops, windows, gs)
+		if err := enqueueCandidates(ctx, ops, windows, gs); err != nil {
+			mu.Unlock()
+			fmt.Fprintf(os.Stderr, "enqueue candidates failed: %v\n", err)
+			continue
+		}
+		processQueue(ctx, ops, gs, globalConcurrency)
 		mu.Unlock()
 	}
 }
 
-// helpers (loadKubeConfig, loadWindows, windowActive, hasCondition) similar to previous examples:
-
+// helpers:
 func loadKubeConfig(kubeconfig string) (*rest.Config, error) {
 	if kubeconfig != "" {
 		return clientcmd.BuildConfigFromFlags("", kubeconfig)
@@ -316,25 +266,18 @@ func loadWindows(client *kubernetes.Clientset, namespace, prefix string) []*main
 			continue
 		}
 		durMin, _ := strconv.Atoi(d["duration"])
-		concur := 1
-		if s := d["concurrency"]; s != "" {
-			if v, err := strconv.Atoi(s); err == nil {
-				concur = v
-			}
-		}
 		res = append(res, &maintenanceWindow{
 			name:         cm.Name,
-			reason:       d["reason"],
 			cronExpr:     cronExpr,
 			duration:     time.Duration(durMin) * time.Minute,
 			nodeSelector: d["nodeSelector"],
-			concurrency:  concur,
 			schedule:     sched,
 		})
 	}
 	return res
 }
 
+// windowActive: find last occurrence and compare duration
 func windowActive(w *maintenanceWindow, now time.Time) bool {
 	start := now.Add(-365 * 24 * time.Hour)
 	var last time.Time
