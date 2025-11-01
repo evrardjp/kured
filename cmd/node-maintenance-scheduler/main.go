@@ -30,22 +30,190 @@ var (
 	)
 )
 
+// maintenanceWindow parsed from ConfigMap
 type maintenanceWindow struct {
 	name         string
 	reason       string
 	cronExpr     string
 	duration     time.Duration
 	nodeSelector string
-	concurrency  int
+	concurrency  int // kept for info; global concurrency enforced separately
 	schedule     cronlib.Schedule
+}
+
+// global state
+type assignment struct {
+	window string
+	node   corev1.Node
+}
+
+type globalState struct {
+	inProgress map[string]assignment // nodeName -> assignment
+	sem        *Semaphore            // global semaphore
+}
+
+// simple counting semaphore with TryAcquire/Release (test-friendly)
+type Semaphore struct {
+	ch chan struct{}
+}
+
+func NewSemaphore(n int) *Semaphore {
+	if n <= 0 {
+		n = 1
+	}
+	return &Semaphore{ch: make(chan struct{}, n)}
+}
+
+func (s *Semaphore) TryAcquire() bool {
+	select {
+	case s.ch <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Semaphore) Release() {
+	select {
+	case <-s.ch:
+	default:
+	}
+}
+
+// nodeOps abstraction for testability
+type nodeOps interface {
+	ListNodes(ctx context.Context, selector string) ([]corev1.Node, error)
+	SetNodeCondition(ctx context.Context, nodeName string, condType string, status corev1.ConditionStatus, reason string) error
+	GetNode(ctx context.Context, nodeName string) (*corev1.Node, error)
+}
+
+type realNodeOps struct {
+	client *kubernetes.Clientset
+}
+
+func (r *realNodeOps) ListNodes(ctx context.Context, selector string) ([]corev1.Node, error) {
+	lo := metav1.ListOptions{}
+	if selector != "" {
+		lo.LabelSelector = selector
+	}
+	list, err := r.client.CoreV1().Nodes().List(ctx, lo)
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (r *realNodeOps) GetNode(ctx context.Context, nodeName string) (*corev1.Node, error) {
+	return r.client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+}
+
+func (r *realNodeOps) SetNodeCondition(ctx context.Context, nodeName string, condType string, status corev1.ConditionStatus, reason string) error {
+	now := metav1.NewTime(time.Now())
+	cond := corev1.NodeCondition{
+		Type:               corev1.NodeConditionType(condType),
+		Status:             status,
+		LastTransitionTime: now,
+		Reason:             reason,
+	}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest, err := r.client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		found := false
+		conds := latest.Status.Conditions
+		for i := range conds {
+			if string(conds[i].Type) == condType {
+				conds[i] = cond
+				found = true
+				break
+			}
+		}
+		if !found {
+			conds = append(conds, cond)
+		}
+		latest.Status.Conditions = conds
+		_, err = r.client.CoreV1().Nodes().UpdateStatus(ctx, latest, metav1.UpdateOptions{})
+		return err
+	})
+}
+
+// ReconcileGlobal builds a global view: for each active window collect candidate nodes,
+// deduplicate nodes (node -> first matching window by iteration order), and assign up to global slots.
+func ReconcileGlobal(ctx context.Context, now time.Time, ops nodeOps, windows []*maintenanceWindow, gs *globalState) error {
+	// mark which windows are active
+	active := map[string]*maintenanceWindow{}
+	for _, w := range windows {
+		if windowActive(w, now) {
+			active[w.name] = w
+		}
+	}
+
+	// release assignments whose window ended
+	for nodeName, a := range gs.inProgress {
+		if _, winStillActive := active[a.window]; !winStillActive {
+			_ = ops.SetNodeCondition(ctx, nodeName, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "window-ended")
+			metrics.WithLabelValues(a.window, nodeName).Set(0)
+			delete(gs.inProgress, nodeName)
+			gs.sem.Release()
+		}
+	}
+
+	// collect candidates per active window; deduplicate by node name picking first window encountered
+	candidates := map[string]*maintenanceWindow{} // nodeName -> window
+	for _, w := range active {
+		nodes, err := ops.ListNodes(ctx, w.nodeSelector)
+		if err != nil {
+			// best-effort: log and continue
+			fmt.Fprintf(os.Stderr, "list nodes for %s: %v\n", w.name, err)
+			continue
+		}
+		for _, n := range nodes {
+			if !hasCondition(&n, "NeedsReboot", corev1.ConditionTrue) {
+				continue
+			}
+			if _, assigned := gs.inProgress[n.Name]; assigned {
+				continue // already in progress
+			}
+			if _, seen := candidates[n.Name]; seen {
+				continue // already claimed by another window (first-wins)
+			}
+			candidates[n.Name] = w
+		}
+	}
+
+	// assign up to global capacity
+	for nodeName, w := range candidates {
+		if !gs.sem.TryAcquire() {
+			break // global concurrency reached
+		}
+		// fetch node to set condition (or rely on candidate listing object if available in real code)
+		n, err := ops.GetNode(ctx, nodeName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "get node %s: %v\n", nodeName, err)
+			gs.sem.Release()
+			continue
+		}
+		if err := ops.SetNodeCondition(ctx, nodeName, "kured.dev/UnderMaintenance", corev1.ConditionTrue, w.reason); err != nil {
+			fmt.Fprintf(os.Stderr, "set undermaintenance %s: %v\n", nodeName, err)
+			gs.sem.Release()
+			continue
+		}
+		gs.inProgress[nodeName] = assignment{window: w.name, node: *n}
+		metrics.WithLabelValues(w.name, nodeName).Set(1)
+		fmt.Printf("assigned node %s -> window %s\n", nodeName, w.name)
+	}
+	return nil
 }
 
 func main() {
 	var kubeconfig, cmPrefix, metricsAddr, cmNamespace string
+	var globalConcurrency int
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional kubeconfig")
 	flag.StringVar(&cmPrefix, "config-prefix", "kured-maintenance-", "configmap prefix")
 	flag.StringVar(&metricsAddr, "metrics-addr", ":9090", "metrics listen")
 	flag.StringVar(&cmNamespace, "namespace", "kube-system", "cm namespace")
+	flag.IntVar(&globalConcurrency, "global-concurrency", 10, "global max concurrent nodes in maintenance")
 	flag.Parse()
 
 	prometheus.MustRegister(metrics)
@@ -60,88 +228,63 @@ func main() {
 		os.Exit(1)
 	}
 	client := kubernetes.NewForConfigOrDie(cfg)
+	ops := &realNodeOps{client: client}
 
-	// load windows once (you can watch ConfigMaps to refresh)
 	windows := loadWindows(client, cmNamespace, cmPrefix)
 	if len(windows) == 0 {
 		fmt.Fprintf(os.Stderr, "no windows found\n")
 		os.Exit(1)
 	}
 
-	// shared state across windows
-	type windowState struct {
-		inProgress map[string]corev1.Node
-		sem        chan struct{}
-	}
-	states := map[string]*windowState{}
-	for _, w := range windows {
-		states[w.name] = &windowState{
-			inProgress: map[string]corev1.Node{},
-			sem:        make(chan struct{}, w.concurrency),
-		}
+	gs := &globalState{
+		inProgress: map[string]assignment{},
+		sem:        NewSemaphore(globalConcurrency),
 	}
 
 	var mu sync.Mutex
-
-	// start node watch to detect NeedsReboot -> False
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { watchNodes(ctx, client, windows, &mu, states) }()
+
+	// watch nodes to free slots when NeedsReboot -> False
+	go func() {
+		watcher, err := client.CoreV1().Nodes().Watch(ctx, metav1.ListOptions{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "node watch: %v\n", err)
+			return
+		}
+		defer watcher.Stop()
+		for ev := range watcher.ResultChan() {
+			if ev.Type == watch.Error {
+				continue
+			}
+			n, ok := ev.Object.(*corev1.Node)
+			if !ok {
+				continue
+			}
+			mu.Lock()
+			if a, present := gs.inProgress[n.Name]; present {
+				if !hasCondition(n, "NeedsReboot", corev1.ConditionTrue) {
+					_ = ops.SetNodeCondition(context.Background(), n.Name, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "reboot-complete")
+					metrics.WithLabelValues(a.window, n.Name).Set(0)
+					delete(gs.inProgress, n.Name)
+					gs.sem.Release()
+					fmt.Printf("node %s left maintenance (reboot-complete)\n", n.Name)
+				}
+			}
+			mu.Unlock()
+		}
+	}()
 
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-
 	for now := range ticker.C {
 		mu.Lock()
-		for _, w := range windows {
-			if !windowActive(w, now) {
-				// close out active nodes when window ended
-				for nodename, n := range states[w.name].inProgress {
-					_ = setNodeCondition(context.Background(), client, &n, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "window-ended")
-					metrics.WithLabelValues(w.name, nodename).Set(0)
-					delete(states[w.name].inProgress, nodename)
-					select {
-					case <-states[w.name].sem:
-					default:
-					}
-				}
-				continue
-			}
-			// list nodes matching selector and NeedsReboot=true
-			lo := metav1.ListOptions{}
-			if w.nodeSelector != "" {
-				lo.LabelSelector = w.nodeSelector
-			}
-			nodes, err := client.CoreV1().Nodes().List(context.Background(), lo)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "list nodes: %v\n", err)
-				continue
-			}
-			for _, n := range nodes.Items {
-				if !hasCondition(&n, "NeedsReboot", corev1.ConditionTrue) {
-					continue
-				}
-				if _, ok := states[w.name].inProgress[n.Name]; ok {
-					continue
-				}
-				// if slot available, set under maintenance and mark inProgress
-				if len(states[w.name].inProgress) < cap(states[w.name].sem) {
-					if err := setNodeCondition(context.Background(), client, &n, "kured.dev/UnderMaintenance", corev1.ConditionTrue, w.reason); err != nil {
-						fmt.Fprintf(os.Stderr, "set undermaintenance: %v\n", err)
-						continue
-					}
-					states[w.name].inProgress[n.Name] = n
-					states[w.name].sem <- struct{}{}
-					metrics.WithLabelValues(w.name, n.Name).Set(1)
-					fmt.Printf("window %s: node %s -> under maintenance\n", w.name, n.Name)
-				}
-			}
-		}
+		_ = ReconcileGlobal(ctx, now, ops, windows, gs)
 		mu.Unlock()
 	}
 }
 
-// Helpers (parsing CM, cron, node watch, condition helpers). Keep minimal.
+// helpers (loadKubeConfig, loadWindows, windowActive, hasCondition) similar to previous examples:
 
 func loadKubeConfig(kubeconfig string) (*rest.Config, error) {
 	if kubeconfig != "" {
@@ -192,9 +335,7 @@ func loadWindows(client *kubernetes.Clientset, namespace, prefix string) []*main
 	return res
 }
 
-// windowActive returns true if 'now' is within the last cron start + duration.
 func windowActive(w *maintenanceWindow, now time.Time) bool {
-	// find last occurrence by stepping from a lookback point
 	start := now.Add(-365 * 24 * time.Hour)
 	var last time.Time
 	for {
@@ -204,51 +345,11 @@ func windowActive(w *maintenanceWindow, now time.Time) bool {
 		}
 		last = next
 		start = next
-		// safety: stop if we loop too many times (shouldn't)
 	}
 	if last.IsZero() {
 		return false
 	}
 	return now.Sub(last) < w.duration
-}
-
-func watchNodes(ctx context.Context, client *kubernetes.Clientset, windows []*maintenanceWindow, mu *sync.Mutex, states map[string]*windowState) {
-	watcher, err := client.CoreV1().Nodes().Watch(ctx, metav1.ListOptions{})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "node watch: %v\n", err)
-		return
-	}
-	defer watcher.Stop()
-	for ev := range watcher.ResultChan() {
-		if ev.Type == watch.Error {
-			continue
-		}
-		n, ok := ev.Object.(*corev1.Node)
-		if !ok {
-			continue
-		}
-		mu.Lock()
-		for _, w := range windows {
-			st := states[w.name]
-			if st == nil {
-				continue
-			}
-			if _, present := st.inProgress[n.Name]; present {
-				if !hasCondition(n, "NeedsReboot", corev1.ConditionTrue) {
-					// done
-					_ = setNodeCondition(context.Background(), client, n, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "reboot-complete")
-					metrics.WithLabelValues(w.name, n.Name).Set(0)
-					delete(st.inProgress, n.Name)
-					select {
-					case <-st.sem:
-					default:
-					}
-					fmt.Printf("window %s: node %s left maintenance\n", w.name, n.Name)
-				}
-			}
-		}
-		mu.Unlock()
-	}
 }
 
 func hasCondition(node *corev1.Node, condType string, status corev1.ConditionStatus) bool {
@@ -258,35 +359,4 @@ func hasCondition(node *corev1.Node, condType string, status corev1.ConditionSta
 		}
 	}
 	return false
-}
-
-func setNodeCondition(ctx context.Context, client *kubernetes.Clientset, node *corev1.Node, condType string, status corev1.ConditionStatus, reason string) error {
-	now := metav1.NewTime(time.Now())
-	cond := corev1.NodeCondition{
-		Type:               corev1.NodeConditionType(condType),
-		Status:             status,
-		LastTransitionTime: now,
-		Reason:             reason,
-	}
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latest, err := client.CoreV1().Nodes().Get(ctx, node.Name, metav1.GetOptions{})
-		if err != nil {
-			return err
-		}
-		found := false
-		conds := latest.Status.Conditions
-		for i := range conds {
-			if string(conds[i].Type) == condType {
-				conds[i] = cond
-				found = true
-				break
-			}
-		}
-		if !found {
-			conds = append(conds, cond)
-		}
-		latest.Status.Conditions = conds
-		_, err = client.CoreV1().Nodes().UpdateStatus(ctx, latest, metav1.UpdateOptions{})
-		return err
-	})
 }
