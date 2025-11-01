@@ -66,6 +66,27 @@ builds:
     flags:
       - -trimpath
 
+  - id: "node-maintenance-scheduler"
+    main: ./cmd/node-maintenance-scheduler
+    binary: node-maintenance-scheduler
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+      - arm
+      - "386"
+    goarm:
+      - "6"
+      - "7"
+    ldflags:
+      - -s -w -X main.version={{ if .IsSnapshot }}{{ .ShortCommit }}{{ else }}{{ .Version }}{{ end }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    flags:
+      - -trimpath
+
 snapshot:
   name_template: "{{ .ShortCommit }}"
 
