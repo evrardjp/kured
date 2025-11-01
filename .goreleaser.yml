@@ -95,3 +95,22 @@ release:
 
 changelog:
   disable: true
+
+dockers_v2:
+  - id: "node-reboot-detector-img"
+    dockerfile: Dockerfile
+    ids:
+      - node-reboot-detector
+    images:
+      - "ghcr.io/{{ .Env.DH_ORG }}/node-reboot-detector"
+    tags:
+      - "v{{ .Version }}"
+      - "{{ if .IsSnapshot }}{{ .ShortCommit }}{{ end }}"
+      - "{{ if not .IsSnapshot }}{{ .Version }}{{ end }}"
+    build-args:
+      - BINARY={{ }}
+    build_flag_templates:
+      - --label=org.opencontainers.image.created={{ .Date }}
+      - --label=org.opencontainers.image.name={{ .ProjectName }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.version={{ .Version }}
