@@ -13,6 +13,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -24,10 +25,9 @@ import (
 
 // Explanation of assumptions (kept short):
 // - ConfigMaps are stored in a single namespace (default: "kured") and their names start with a prefix (default: "kured-maintenance-")
-// - Each ConfigMap's Data contains keys: "reason", "startTime" (HH:MM), "duration" (minutes), "nodeSelector" (label selector, e.g. "node-role.kubernetes.io/worker=true"), "concurrency" (int)
-// - startTime is interpreted as a daily time in the cluster's local timezone.
+// - Each ConfigMap's Data contains keys: "reason", "startTime" (cron expression), "duration" (minutes), "nodeSelector" (label selector, e.g. "node-role.kubernetes.io/worker=true"), "concurrency" (int)
+// - startTime is a cron expression. We use robfig/cron v3 to parse and schedule.
 // - Condition types used: "NeedsReboot" and custom "kured.dev/UnderMaintenance".
-// - We do not rely on the repo's timewindow package; this keeps the example minimal and focused on the requested behaviour.
 
 var (
 	metrics = prometheus.NewGaugeVec(
@@ -41,9 +41,11 @@ func main() {
 	var kubeconfig string
 	var cmPrefix string
 	var metricsAddr string
+	var cmNamespace string
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional path to kubeconfig (use in-cluster if empty)")
 	flag.StringVar(&cmPrefix, "config-prefix", "kured-maintenance-", "prefix for ConfigMap names that define maintenance windows")
 	flag.StringVar(&metricsAddr, "metrics-addr", ":9090", "address to serve Prometheus metrics on")
+	flag.StringVar(&cmNamespace, "namespace", "kube-system", "namespace where maintenance ConfigMaps live")
 	flag.Parse()
 
 	prometheus.MustRegister(metrics)
@@ -64,26 +66,39 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Discover maintenance ConfigMaps and schedule handlers
-	cms, err := clientset.CoreV1().ConfigMaps("kured").List(context.TODO(), metav1.ListOptions{})
+	// Discover maintenance ConfigMaps and schedule handlers using cron
+	cms, err := clientset.CoreV1().ConfigMaps(cmNamespace).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "failed to list configmaps: %v\n", err)
 		os.Exit(1)
 	}
 
-	var wg sync.WaitGroup
+	c := cron.New(cron.WithParser(cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)))
+
 	for _, cm := range cms.Items {
 		if !strings.HasPrefix(cm.Name, cmPrefix) {
 			continue
 		}
-		wg.Add(1)
-		go func(cm corev1.ConfigMap) {
-			defer wg.Done()
-			handleMaintenanceConfig(context.Background(), clientset, cm)
-		}(cm)
+		mw, err := parseConfigMap(cm)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "invalid maintenance config %s: %v\n", cm.Name, err)
+			continue
+		}
+
+		// capture local copies for closure
+		localMW := mw
+		localClient := clientset
+		_, err = c.AddFunc(localMW.cronExpr, func() { runMaintenanceWindow(context.Background(), localClient, localMW) })
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "failed to schedule maintenance %s: %v\n", localMW.name, err)
+			continue
+		}
+		fmt.Printf("scheduled maintenance %s with cron '%s' duration %s\n", localMW.name, localMW.cronExpr, localMW.duration)
 	}
 
-	wg.Wait()
+	c.Start()
+	// block forever
+	select {}
 }
 
 // loadKubeConfig loads in-cluster config or falls back to kubeconfig path.
@@ -98,8 +113,7 @@ func loadKubeConfig(kubeconfig string) (*rest.Config, error) {
 type maintenanceWindow struct {
 	name         string
 	reason       string
-	startHour    int
-	startMinute  int
+	cronExpr     string
 	duration     time.Duration
 	nodeSelector string
 	concurrency  int
@@ -109,19 +123,9 @@ func parseConfigMap(cm corev1.ConfigMap) (*maintenanceWindow, error) {
 	d := cm.Data
 	name := cm.Name
 	reason := d["reason"]
-	start := d["startTime"]
-	// expected HH:MM
-	parts := strings.Split(start, ":")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid startTime format in %s: %s", name, start)
-	}
-	hour, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return nil, err
-	}
-	minute, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return nil, err
+	cronExpr := strings.TrimSpace(d["startTime"])
+	if cronExpr == "" {
+		return nil, fmt.Errorf("missing startTime (cron expression) in %s", name)
 	}
 	durStr := d["duration"]
 	durMin, err := strconv.Atoi(durStr)
@@ -140,119 +144,118 @@ func parseConfigMap(cm corev1.ConfigMap) (*maintenanceWindow, error) {
 	if sel == "" {
 		sel = ""
 	}
-
+	// maybe add a "command to run"
 	return &maintenanceWindow{
 		name:         name,
 		reason:       reason,
-		startHour:    hour,
-		startMinute:  minute,
+		cronExpr:     cronExpr,
 		duration:     time.Duration(durMin) * time.Minute,
 		nodeSelector: sel,
 		concurrency:  con,
 	}, nil
 }
 
-// handleMaintenanceConfig schedules and runs the maintenance window according to the simple daily HH:MM model.
-func handleMaintenanceConfig(ctx context.Context, clientset *kubernetes.Clientset, cm corev1.ConfigMap) {
-	mw, err := parseConfigMap(cm)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "failed to parse configmap %s: %v\n", cm.Name, err)
-		return
-	}
-
-	for {
-		now := time.Now()
-		todayStart := time.Date(now.Year(), now.Month(), now.Day(), mw.startHour, mw.startMinute, 0, 0, now.Location())
-		var start time.Time
-		if now.Before(todayStart) {
-			start = todayStart
-		} else {
-			start = todayStart.Add(24 * time.Hour)
-		}
-		delay := time.Until(start)
-		fmt.Printf("maintenance %s will start at %s (in %s)\n", mw.name, start.Format(time.RFC3339), delay)
-		t := time.NewTimer(delay)
-		select {
-		case <-t.C:
-			// start maintenance
-			runMaintenanceWindow(ctx, clientset, mw)
-		case <-ctx.Done():
-			t.Stop()
-			return
-		}
-	}
-}
-
-// runMaintenanceWindow executes the window: select nodes, build queue, watch nodes and manage conditions.
+// runMaintenanceWindow executes the window: continuously discover nodes during the window, build queue, watch nodes and manage conditions.
 func runMaintenanceWindow(ctx context.Context, clientset *kubernetes.Clientset, mw *maintenanceWindow) {
-	fmt.Printf("running maintenance %s\n", mw.name)
-	// build node list
-	listOptions := metav1.ListOptions{}
-	if mw.nodeSelector != "" {
-		listOptions.LabelSelector = mw.nodeSelector
-	}
-	nodes, err := clientset.CoreV1().Nodes().List(ctx, listOptions)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "failed to list nodes: %v\n", err)
-		return
-	}
+	ctx, cancel := context.WithTimeout(ctx, mw.duration)
+	defer cancel()
 
-	candidates := []corev1.Node{}
-	for _, n := range nodes.Items {
-		if hasCondition(&n, "NeedsReboot", corev1.ConditionTrue) {
-			candidates = append(candidates, n)
-		}
-	}
-
-	if len(candidates) == 0 {
-		fmt.Printf("no reboot-needed nodes for %s\n", mw.name)
-		return
-	}
+	fmt.Printf("running maintenance %s for %s\n", mw.name, mw.duration)
 
 	// queue management
 	var mu sync.Mutex
-	pending := make([]corev1.Node, len(candidates))
-	copy(pending, candidates)
+	pending := make([]corev1.Node, 0)
+	pendingSet := map[string]bool{}
 	inProgress := map[string]corev1.Node{}
 	sem := make(chan struct{}, mw.concurrency)
 
-	// watch nodes for changes
-	watchCtx, cancelWatch := context.WithCancel(ctx)
-	defer cancelWatch()
+	// watch nodes for changes (to detect when NeedsReboot becomes false)
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
 	go watchNodes(watchCtx, clientset, mw, &mu, inProgress, sem)
 
-	windowEnd := time.Now().Add(mw.duration)
-	for time.Now().Before(windowEnd) {
+	// ticker periodically lists nodes and enqueues those that require reboot
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	enqueue := func(n corev1.Node) {
+		if _, ok := inProgress[n.Name]; ok {
+			return
+		}
+		if pendingSet[n.Name] {
+			return
+		}
+		pending = append(pending, n)
+		pendingSet[n.Name] = true
+	}
+
+	// initial enqueue
+	func() {
 		mu.Lock()
-		// fill up concurrency slots
-		for len(inProgress) < mw.concurrency && len(pending) > 0 {
-			n := pending[0]
-			pending = pending[1:]
-			// mark under maintenance
-			if err := setNodeCondition(ctx, clientset, &n, "kured.dev/UnderMaintenance", corev1.ConditionTrue, mw.reason); err != nil {
-				_, _ = fmt.Fprintf(os.Stderr, "failed to set under maintenance on %s: %v\n", n.Name, err)
+		defer mu.Unlock()
+		listOptions := metav1.ListOptions{}
+		if mw.nodeSelector != "" {
+			listOptions.LabelSelector = mw.nodeSelector
+		}
+		nodes, err := clientset.CoreV1().Nodes().List(ctx, listOptions)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "failed to list nodes at window start: %v\n", err)
+			return
+		}
+		for _, n := range nodes.Items {
+			if hasCondition(&n, "NeedsReboot", corev1.ConditionTrue) {
+				enqueue(n)
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// window ended
+			mu.Lock()
+			for _, n := range inProgress {
+				_ = setNodeCondition(context.Background(), clientset, &n, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "window-ended")
+				metrics.WithLabelValues(mw.name, n.Name).Set(0)
+			}
+			mu.Unlock()
+			fmt.Printf("maintenance %s finished\n", mw.name)
+			return
+		case <-ticker.C:
+			// discover new nodes during window
+			listOptions := metav1.ListOptions{}
+			if mw.nodeSelector != "" {
+				listOptions.LabelSelector = mw.nodeSelector
+			}
+			nodes, err := clientset.CoreV1().Nodes().List(ctx, listOptions)
+			if err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "failed to list nodes during window: %v\n", err)
 				continue
 			}
-			inProgress[n.Name] = n
-			metrics.WithLabelValues(mw.name, n.Name).Set(1)
-			sem <- struct{}{}
-			fmt.Printf("node %s entered maintenance queue for %s\n", n.Name, mw.name)
+			mu.Lock()
+			for _, n := range nodes.Items {
+				if hasCondition(&n, "NeedsReboot", corev1.ConditionTrue) {
+					enqueue(n)
+				}
+			}
+			// try to fill concurrency slots
+			for len(inProgress) < mw.concurrency && len(pending) > 0 {
+				n := pending[0]
+				pending = pending[1:]
+				delete(pendingSet, n.Name)
+				// mark under maintenance
+				if err := setNodeCondition(context.Background(), clientset, &n, "kured.dev/UnderMaintenance", corev1.ConditionTrue, mw.reason); err != nil {
+					_, _ = fmt.Fprintf(os.Stderr, "failed to set under maintenance on %s: %v\n", n.Name, err)
+					continue
+				}
+				inProgress[n.Name] = n
+				metrics.WithLabelValues(mw.name, n.Name).Set(1)
+				sem <- struct{}{}
+				fmt.Printf("node %s entered maintenance queue for %s\n", n.Name, mw.name)
+			}
+			mu.Unlock()
 		}
-		mu.Unlock()
-
-		// sleep a bit and re-check until window end
-		time.Sleep(5 * time.Second)
 	}
-
-	// window ended: cleanup - unset under maintenance for any inProgress nodes
-	mu.Lock()
-	for _, n := range inProgress {
-		_ = setNodeCondition(ctx, clientset, &n, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "window-ended")
-		metrics.WithLabelValues(mw.name, n.Name).Set(0)
-	}
-	mu.Unlock()
-
-	fmt.Printf("maintenance %s finished\n", mw.name)
 }
 
 // watchNodes watches node updates and when NeedsReboot becomes False for a node in inProgress, it will remove it and free a slot.
@@ -278,7 +281,7 @@ func watchNodes(ctx context.Context, clientset *kubernetes.Clientset, mw *mainte
 				// remove from inProgress
 				delete(inProgress, node.Name)
 				// unset under maintenance condition
-				_ = setNodeCondition(ctx, clientset, node, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "reboot-complete")
+				_ = setNodeCondition(context.Background(), clientset, node, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "reboot-complete")
 				metrics.WithLabelValues(mw.name, node.Name).Set(0)
 				// free a slot
 				select {
