@@ -4,6 +4,7 @@
 DH_ORG ?= kubereboot
 VERSION=$(shell git rev-parse --short HEAD)
 SUDO=$(shell docker info >/dev/null 2>&1 || echo "sudo -E")
+KO_DOCKER_REPO=ghcr.io/$(DH_ORG)/kured
 
 all: image
 
@@ -12,26 +13,8 @@ install-tools:
 	command -v  mise 2>&1 || { echo "please install mise to continue" >&2; exit 127; }
 	mise install
 
-clean:
-	rm -rf ./dist
-
-kured:
-	goreleaser build --clean --single-target --snapshot
-
-kured-all:
-	goreleaser build --clean --snapshot
-
-kured-release-tag:
-	goreleaser release --clean
-
-kured-release-snapshot:
-	goreleaser release --clean --snapshot
-
 image: kured
-	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/kured:$(VERSION) -f Dockerfile.kured .
-	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/node-reboot-detector:$(VERSION) -f Dockerfile.node-reboot-detector .
-	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/node-reboot-reporter:$(VERSION) -f Dockerfile.node-reboot-reporter .
-	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/node-maintenance-scheduler:$(VERSION) -f Dockerfile.node-maintenance-scheduler .
+	ko build --local
 
 dev-image: kured
 	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/kubereboot/kured:dev -f Dockerfile.kured .
