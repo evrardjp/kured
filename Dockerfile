@@ -18,7 +18,7 @@ RUN set -ex \
           SUFFIX="" \
           ;; \
     esac \
-  && cp /dist/${BINARY}_${TARGETOS}_${TARGETARCH}${SUFFIX}/kured /dist/entrypoint;
+  && cp /dist/${BINARY}_${TARGETOS}_${TARGETARCH}${SUFFIX}/${BINARY} /dist/entrypoint;
 
 FROM cgr.dev/chainguard/static AS final
 COPY --from=bin /dist/entrypoint /usr/bin/entrypoint
