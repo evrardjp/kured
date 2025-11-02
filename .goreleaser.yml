@@ -8,14 +8,10 @@ builds:
     binary: kured
     env:
       - CGO_ENABLED=0
-    goos:
-      - linux
-    goarch:
-      - amd64
-      - arm64
-    goarm:
-      - "6"
-      - "7"
+    targets:
+      - linux_amd64_v1
+      - linux_arm64
+      - linux_arm_v7
     ldflags:
       - -s -w -X main.version={{ if .IsSnapshot }}{{ .ShortCommit }}{{ else }}{{ .Version }}{{ end }}
     mod_timestamp: "{{ .CommitTimestamp }}"
@@ -27,14 +23,10 @@ builds:
     binary: node-reboot-detector
     env:
       - CGO_ENABLED=0
-    goos:
-      - linux
-    goarch:
-      - amd64
-      - arm64
-    goarm:
-      - "6"
-      - "7"
+    targets:
+      - linux_amd64_v1
+      - linux_arm64
+      - linux_arm_v7
     ldflags:
       - -s -w -X main.version={{ if .IsSnapshot }}{{ .ShortCommit }}{{ else }}{{ .Version }}{{ end }}
     mod_timestamp: "{{ .CommitTimestamp }}"
@@ -46,14 +38,10 @@ builds:
     binary: node-reboot-reporter
     env:
       - CGO_ENABLED=0
-    goos:
-      - linux
-    goarch:
-      - amd64
-      - arm64
-    goarm:
-      - "6"
-      - "7"
+    targets:
+      - linux_amd64_v1
+      - linux_arm64
+      - linux_arm_v7
     ldflags:
       - -s -w -X main.version={{ if .IsSnapshot }}{{ .ShortCommit }}{{ else }}{{ .Version }}{{ end }}
     mod_timestamp: "{{ .CommitTimestamp }}"
@@ -65,14 +53,10 @@ builds:
     binary: node-maintenance-scheduler
     env:
       - CGO_ENABLED=0
-    goos:
-      - linux
-    goarch:
-      - amd64
-      - arm64
-    goarm:
-      - "6"
-      - "7"
+    targets:
+      - linux_amd64_v1
+      - linux_arm64
+      - linux_arm_v7
     ldflags:
       - -s -w -X main.version={{ if .IsSnapshot }}{{ .ShortCommit }}{{ else }}{{ .Version }}{{ end }}
     mod_timestamp: "{{ .CommitTimestamp }}"
@@ -87,23 +71,3 @@ release:
 
 changelog:
   disable: true
-
-dockers_v2:
-  - id: "node-reboot-detector-img"
-    ids:
-      - node-reboot-detector
-    images:
-      - "ghcr.io/{{ .Env.DH_ORG }}/node-reboot-detector"
-    platforms:
-      - linux/amd64
-      - linux/arm64
-    tags:
-      - "v{{ .Version }}"
-      - "{{ if .IsSnapshot }}{{ .ShortCommit }}{{ end }}"
-      - "{{ if not .IsSnapshot }}{{ .Version }}{{ end }}"
-
-    build_flag_templates:
-      - --label=org.opencontainers.image.created={{ .Date }}
-      - --label=org.opencontainers.image.name={{ .ProjectName }}
-      - --label=org.opencontainers.image.revision={{ .FullCommit }}
-      - --label=org.opencontainers.image.version={{ .Version }}
