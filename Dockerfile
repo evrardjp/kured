@@ -10,35 +10,14 @@ RUN mkdir -p /tmp/zoneinfo && cp -r /usr/share/zoneinfo /tmp/zoneinfo \
     && mkdir -p /tmp/certs \
     && cp /etc/ssl/certs/ca-certificates.crt /tmp/certs/ca-certificates.crt
 
-FROM ${ARTEFACTS_IMAGE} AS bin
-ARG TARGETOS
-ARG TARGETARCH
-ARG TARGETVARIANT
-ARG BINARY
-
-COPY dist/ /dist
-RUN set -ex \
-  && case "${TARGETARCH}" in \
-      amd64) \
-          SUFFIX="_v1" \
-          ;; \
-      arm) \
-          SUFFIX="_${TARGETVARIANT:1}" \
-          ;; \
-      *) \
-          SUFFIX="" \
-          ;; \
-    esac \
-  && cp /dist/${BINARY}_${TARGETOS}_${TARGETARCH}${SUFFIX}/${BINARY} /dist/${BINARY}
-
 FROM ${BASE_IMAGE} AS final
-ARG BINARY
-ENV BINNAME=${BINARY}
+ARG TARGETPLATFORM
+ARG BINNAME
 
 COPY --from=alpine-artefacts /zoneinfo.zip /zoneinfo.zip
 COPY --from=alpine-artefacts /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 ENV ZONEINFO=/zoneinfo.zip
 
-COPY --from=bin /dist/${BINNAME} /usr/bin/entrypoint
+COPY $TARGETPLATFORM/${BINNAME} /usr/bin/entrypoint
 
 ENTRYPOINT ["/usr/bin/entrypoint"]

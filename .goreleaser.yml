@@ -13,8 +13,6 @@ builds:
     goarch:
       - amd64
       - arm64
-      - arm
-      - "386"
     goarm:
       - "6"
       - "7"
@@ -34,8 +32,6 @@ builds:
     goarch:
       - amd64
       - arm64
-      - arm
-      - "386"
     goarm:
       - "6"
       - "7"
@@ -55,8 +51,6 @@ builds:
     goarch:
       - amd64
       - arm64
-      - arm
-      - "386"
     goarm:
       - "6"
       - "7"
@@ -76,8 +70,6 @@ builds:
     goarch:
       - amd64
       - arm64
-      - arm
-      - "386"
     goarm:
       - "6"
       - "7"
@@ -98,17 +90,18 @@ changelog:
 
 dockers_v2:
   - id: "node-reboot-detector-img"
-    dockerfile: Dockerfile
     ids:
       - node-reboot-detector
     images:
       - "ghcr.io/{{ .Env.DH_ORG }}/node-reboot-detector"
+    platforms:
+      - linux/amd64
+      - linux/arm64
     tags:
       - "v{{ .Version }}"
       - "{{ if .IsSnapshot }}{{ .ShortCommit }}{{ end }}"
       - "{{ if not .IsSnapshot }}{{ .Version }}{{ end }}"
-    build-args:
-      - BINARY={{ }}
+
     build_flag_templates:
       - --label=org.opencontainers.image.created={{ .Date }}
       - --label=org.opencontainers.image.name={{ .ProjectName }}
