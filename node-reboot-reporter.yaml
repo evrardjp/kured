@@ -28,7 +28,7 @@ rules:
     verbs: [ "get", "list" ]
   - apiGroups: [ "" ]
     resources: [ "nodes/status" ]
-    verbs: [ "update", "patch" ]
+    verbs: [ "update", "patch" ] # need to remove update asap.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

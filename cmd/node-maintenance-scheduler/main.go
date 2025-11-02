@@ -126,9 +126,9 @@ func enqueueCandidates(ctx context.Context, ops nodeOps, windows []*maintenanceW
 	return nil
 }
 
-func processQueue(ctx context.Context, ops nodeOps, gs *globalState, globalConcurrency int) {
+func processQueue(ctx context.Context, ops nodeOps, gs *globalState, maxRebootConcurrency int) {
 	// process pending queue up to concurrency limit
-	for len(gs.active) < globalConcurrency && len(gs.pending) > 0 {
+	for len(gs.active) < maxRebootConcurrency && len(gs.pending) > 0 {
 		nodeName := gs.pending[0]
 		gs.pending = gs.pending[1:]
 
@@ -148,7 +148,7 @@ func processQueue(ctx context.Context, ops nodeOps, gs *globalState, globalConcu
 			continue
 		}
 
-		if err := ops.SetNodeCondition(ctx, nodeName, "kured.dev/UnderMaintenance", corev1.ConditionTrue, ""); err != nil {
+		if err := ops.SetNodeCondition(ctx, nodeName, "kured.dev/UnderMaintenance", corev1.ConditionTrue, "Node moved to active queue"); err != nil {
 			fmt.Fprintf(os.Stderr, "set undermaintenance %s: %v\n", nodeName, err)
 			continue
 		}
@@ -158,15 +158,55 @@ func processQueue(ctx context.Context, ops nodeOps, gs *globalState, globalConcu
 	}
 }
 
+// WatchNodesConditions manages the queues of nodes based on the NeedsReboot condition.
+// If NeedsReboot is removed, the node is removed from any queue.
+// This allows external actors to remove nodes from maintenance
+// e.g., if a node is manually rebooted or patched.
+// This runs in a separate goroutine to avoid blocking the main loop.
+func WatchNodesConditions(ctx context.Context, ops *realNodeOps, gs *globalState, mu *sync.Mutex) {
+	watcher, err := ops.client.CoreV1().Nodes().Watch(ctx, metav1.ListOptions{})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "node watch: %v\n", err)
+		return
+	}
+	defer watcher.Stop()
+	for ev := range watcher.ResultChan() {
+		if ev.Type == watch.Error {
+			continue
+		}
+		n, ok := ev.Object.(*corev1.Node)
+		if !ok {
+			continue
+		}
+		mu.Lock()
+		if !hasCondition(n, "NeedsReboot", corev1.ConditionTrue) {
+			if _, present := gs.active[n.Name]; present {
+				_ = ops.SetNodeCondition(ctx, n.Name, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "NeedsReboot condition removed")
+				delete(gs.active, n.Name)
+				fmt.Printf("node %s -> maintenance complete\n", n.Name)
+			} else {
+				for i, nodeName := range gs.pending {
+					if nodeName == n.Name {
+						gs.pending = append(gs.pending[:i], gs.pending[i+1:]...)
+						fmt.Printf("node %s -> removed from pending queue\n", n.Name)
+						break
+					}
+				}
+			}
+		}
+		mu.Unlock()
+	}
+}
+
 func main() {
 	var kubeconfig, cmPrefix, cmNamespace string
-	var globalConcurrency int
+	var maxRebootConcurrency int
 	var metricsAddr string // kept for parity; not used
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional kubeconfig")
-	flag.StringVar(&cmPrefix, "config-prefix", "kured-maintenance-", "configmap prefix")
-	flag.StringVar(&cmNamespace, "namespace", "kube-system", "cm namespace")
-	flag.IntVar(&globalConcurrency, "global-concurrency", 10, "global max concurrent nodes in maintenance")
-	flag.StringVar(&metricsAddr, "metrics-addr", ":9090", "metrics listen (unused)")
+	flag.StringVar(&cmPrefix, "config-prefix", "kured-maintenance-", "maintenance configmap prefix")
+	flag.StringVar(&cmNamespace, "namespace", "kube-system", "maintenance cm namespace")
+	flag.IntVar(&maxRebootConcurrency, "max-reboot-concurrency", 10, "maximum amount of nodes in maintenance at any point in time")
+	flag.StringVar(&metricsAddr, "metrics-addr", ":8080", "metrics listen")
 	flag.Parse()
 
 	cfg, err := loadKubeConfig(kubeconfig)
@@ -192,33 +232,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Node watcher just needs to clear from the active set
-	go func() {
-		watcher, err := client.CoreV1().Nodes().Watch(ctx, metav1.ListOptions{})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "node watch: %v\n", err)
-			return
-		}
-		defer watcher.Stop()
-		for ev := range watcher.ResultChan() {
-			if ev.Type == watch.Error {
-				continue
-			}
-			n, ok := ev.Object.(*corev1.Node)
-			if !ok {
-				continue
-			}
-			mu.Lock()
-			if _, present := gs.active[n.Name]; present {
-				if !hasCondition(n, "NeedsReboot", corev1.ConditionTrue) {
-					_ = ops.SetNodeCondition(ctx, n.Name, "kured.dev/UnderMaintenance", corev1.ConditionFalse, "")
-					delete(gs.active, n.Name)
-					fmt.Printf("node %s -> maintenance complete\n", n.Name)
-				}
-			}
-			mu.Unlock()
-		}
-	}()
+	go WatchNodesConditions(ctx, ops, gs, &mu)
 
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -230,7 +244,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "enqueue candidates failed: %v\n", err)
 			continue
 		}
-		processQueue(ctx, ops, gs, globalConcurrency)
+		processQueue(ctx, ops, gs, maxRebootConcurrency)
 		mu.Unlock()
 	}
 }
