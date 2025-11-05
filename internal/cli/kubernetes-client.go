@@ -11,12 +11,12 @@ import (
 
 // KubernetesClientSetOrDie tries to load a client config from the given kubeconfig file.
 // If the file is not found, it tries to load the in-cluster config.
-func KubernetesClientSetOrDie(kubeconfig string) *kubernetes.Clientset {
+func KubernetesClientSetOrDie(masterUrl string, kubeconfig string) *kubernetes.Clientset {
 	// build k8s client
 	var cfg *rest.Config
 	var err error
 	if kubeconfig != "" {
-		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		cfg, err = clientcmd.BuildConfigFromFlags(masterUrl, kubeconfig)
 		if err != nil {
 			os.Exit(1)
 		}
