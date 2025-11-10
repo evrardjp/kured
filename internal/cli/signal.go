@@ -7,6 +7,9 @@ import (
 	"syscall"
 )
 
+// Instead of import kubernetes package, I only use the standard library.
+// This is useful for some of the components who do not add kubernetes as a dependency, making the image smaller.
+
 var onlyOneSignalHandler = make(chan struct{})
 var shutdownSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 

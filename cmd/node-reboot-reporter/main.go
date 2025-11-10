@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/kubereboot/kured/internal/cli"
+	"github.com/kubereboot/kured/pkg/conditions"
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -543,14 +544,14 @@ func main() {
 						if targ.ScrapeInfo.NodeName != "" {
 							// Not using a pointer to ensure copy of struct to ensure no heap usage.
 							currentCondition := v1.NodeCondition{
-								Type:               rebootRequiredConditionType,
-								Status:             boolToConditionStatus(targ.ScrapeInfo.RebootRequired),
+								Type:               conditions.StringToConditionType(rebootRequiredConditionType),
+								Status:             conditions.BoolToConditionStatus(targ.ScrapeInfo.RebootRequired),
 								Reason:             rebootRequiredConditionReason,
 								Message:            fmt.Sprintf("%s is posting reboot-required as %t", nodeDetectorServiceName, targ.ScrapeInfo.RebootRequired),
 								LastHeartbeatTime:  metav1.Now(),
 								LastTransitionTime: metav1.Now(),
 							}
-							if err := updateNodeCondition(ctx, clientset, targ.ScrapeInfo.NodeName, currentCondition); err != nil {
+							if err := conditions.UpdateNodeCondition(ctx, clientset, targ.ScrapeInfo.NodeName, currentCondition); err != nil {
 								slog.Error("failed to update node condition", "error", err)
 							}
 							slog.Debug(fmt.Sprintf("node %s condition heartbeat done, reboot required condition is %s", targ.ScrapeInfo.NodeName, currentCondition.Status))
@@ -566,42 +567,6 @@ func main() {
 
 	// block forever
 	select {}
-}
-
-func updateNodeCondition(ctx context.Context, clientset *kubernetes.Clientset, nodeName string, condition v1.NodeCondition) error {
-	node, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-
-	updated := false
-	for i, c := range node.Status.Conditions {
-		if c.Type == condition.Type {
-			// Preserve the original transition time if the status hasn't changed.
-			if c.Status == condition.Status {
-				condition.LastTransitionTime = c.LastTransitionTime
-			}
-			node.Status.Conditions[i] = condition
-			updated = true
-			break
-		}
-	}
-	if !updated {
-		node.Status.Conditions = append(node.Status.Conditions, condition)
-	}
-
-	_, err = clientset.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to update node status: %w", err)
-	}
-	return nil
-}
-
-func boolToConditionStatus(b bool) v1.ConditionStatus {
-	if b {
-		return v1.ConditionTrue
-	}
-	return v1.ConditionFalse
 }
 
 // handleEndpointSliceUpsert iterates endpoints and upserts targets to store
