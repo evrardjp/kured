@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/kubereboot/kured/internal/maintenances"
@@ -19,12 +18,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
-
-type MaintenanceQueues struct {
-	mu      sync.Mutex
-	pending []string
-	active  []string
-}
 
 // Controller watches Node updates/deletes and processes them via a typed workQueue.
 // It assigns nodes into maintenance queues based on their conditions, ignoring maintenance windows.
