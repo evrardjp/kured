@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
 )
 
 var (
@@ -50,7 +52,6 @@ func main() {
 	flag.StringVar(&metricsHost, "metrics-host", "", "host where metrics will listen")
 	flag.IntVar(&metricsPort, "metrics-port", 8080, "port number where metrics will listen")
 	flag.StringVar(&namespace, "namespace", "kube-system", "Namespace where maintenance configmaps live")
-
 	flag.Parse()
 
 	// Load flags from environment variables. Remember the prefix KURED_!
@@ -85,9 +86,14 @@ func main() {
 		"knownMaintenanceWindows", len(windows),
 	)
 
+	slog.Info("You must reload this deployment in case of new or updated maintenance window(s)")
+
 	// Maintenance manager setup
 	c := cronlib.New(cronlib.WithLogger(cronLogger), cronlib.WithChain(cronlib.SkipIfStillRunning(cronLogger)))
-	loadAllCronJobs(c, mw, logger)
+	if err := loadAllCronJobs(c, mw, logger); err != nil {
+		slog.Error("Failed to load maintenance windows into cron", "error", err.Error())
+		os.Exit(1)
+	}
 	c.Start()
 
 	// Controller handling node events
@@ -111,59 +117,7 @@ func main() {
 	// - the controller is running and watching node changes
 	// We can start processing nodes if they belong to a maintenance window
 
-	go func() {
-		ticker := time.NewTicker(period)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-
-				allNodes, _ := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-				for _, n := range allNodes.Items {
-
-					if !mw.ContainsNode(n) {
-						slog.Debug("this node is not under any active maintenance window and is therefore ignored", "node", n.Name)
-						continue
-					}
-
-					// Safety net to prevent a race condition where a node no longer matches the conditions between the informer change and this loop
-					if !conditions.Matches(n.Status.Conditions, positiveConditions, negativeConditions) {
-						// A node not matching the conditions anymore should be removed from all queues
-						if removed := maintenanceQueues.Dequeue(n.ObjectMeta.Name); removed {
-							slog.Info("Node removed from maintenance queues as it no longer matches conditions", "node", n.ObjectMeta.Name)
-						}
-						continue
-					}
-
-					// Node matches an active maintenance window and needs maintenance
-					if active := maintenanceQueues.ProcessNode(n.ObjectMeta.Name); !active {
-						slog.Debug("Node cannot be moved to active maintenance - concurrency limit reached or node not found in pending queue", "node", n.ObjectMeta.Name)
-						continue
-					}
-
-					slog.Debug("Node maintenance started", "node", n.ObjectMeta.Name)
-					currentCondition := v1.NodeCondition{
-						Type:               conditions.StringToConditionType(conditions.UnderMaintenanceConditionType),
-						Status:             conditions.BoolToConditionStatus(true),
-						Reason:             "Node under maintenance",
-						Message:            fmt.Sprintf("%s is putting node under maintenance", nodeMaintenanceServiceName),
-						LastHeartbeatTime:  metav1.Now(),
-						LastTransitionTime: metav1.Now(),
-					}
-
-					if err := conditions.UpdateNodeCondition(ctx, client, n.ObjectMeta.Name, currentCondition); err != nil {
-						slog.Error("Failed to set UnderMaintenance condition - needs human intervention as it will eventually block the queue", "node", n.ObjectMeta.Name, "error", err.Error())
-						continue
-					}
-					slog.Info("Node moved to active maintenance", "node", n.ObjectMeta.Name)
-				}
-
-			case <-ctx.Done():
-				slog.Info("Shutting down maintenance assigner")
-				return
-			}
-		}
-	}()
+	go startNodeMaintenance(ctx, period, client, mw, positiveConditions, negativeConditions, maintenanceQueues)
 
 	// Closes on Ctrl-C
 	http.Handle("/metrics", promhttp.Handler())
@@ -175,19 +129,67 @@ func main() {
 
 }
 
+func startNodeMaintenance(ctx context.Context, period time.Duration, client *kubernetes.Clientset, mw *maintenances.Windows, positiveConditions []string, negativeConditions []string, maintenanceQueues *maintenances.Queues) {
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
 
+			allNodes, _ := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+			for _, n := range allNodes.Items {
 
+				if !mw.ContainsNode(n) {
+					slog.Debug("this node is not under any active maintenance window and is therefore ignored", "node", n.Name)
+					continue
+				}
 
-}
+				// Safety net to prevent a race condition where a node no longer matches the conditions between the informer change and this loop
+				if !conditions.Matches(n.Status.Conditions, positiveConditions, negativeConditions) {
+					// A node not matching the conditions anymore should be removed from all queues
+					if removed := maintenanceQueues.Dequeue(n.ObjectMeta.Name); removed {
+						slog.Info("Node removed from maintenance queues as it no longer matches conditions", "node", n.ObjectMeta.Name)
+					}
+					continue
+				}
 
-func loadAllCronJobs(c *cronlib.Cron, mw *maintenances.Windows, logger *slog.Logger) {
-	logger.Info("You must reload this deployment in case of new or updated maintenance window(s)")
-	for _, window := range mw.AllWindows {
-		_, err := c.AddFunc(window.Schedule, startWindow(window.Name, mw, logger))
-		if err != nil {
-			slog.Error("Problem adding function to schedule", "error", err.Error())
+				// Node matches an active maintenance window and needs maintenance
+				if active := maintenanceQueues.ProcessNode(n.ObjectMeta.Name); !active {
+					slog.Debug("Node cannot be moved to active maintenance - concurrency limit reached or node not found in pending queue", "node", n.ObjectMeta.Name)
+					continue
+				}
+
+				slog.Debug("Node maintenance started", "node", n.ObjectMeta.Name)
+				currentCondition := v1.NodeCondition{
+					Type:               conditions.StringToConditionType(conditions.UnderMaintenanceConditionType),
+					Status:             conditions.BoolToConditionStatus(true),
+					Reason:             "Node under maintenance",
+					Message:            fmt.Sprintf("%s is putting node under maintenance", nodeMaintenanceServiceName),
+					LastHeartbeatTime:  metav1.Now(),
+					LastTransitionTime: metav1.Now(),
+				}
+
+				if err := conditions.UpdateNodeCondition(ctx, client, n.ObjectMeta.Name, currentCondition); err != nil {
+					slog.Error("Failed to set UnderMaintenance condition - needs human intervention as it will eventually block the queue", "node", n.ObjectMeta.Name, "error", err.Error())
+					continue
+				}
+				slog.Info("Node moved to active maintenance", "node", n.ObjectMeta.Name)
+			}
+
+		case <-ctx.Done():
+			slog.Info("Shutting down maintenance assigner")
+			return
 		}
 	}
+}
+
+func loadAllCronJobs(c *cronlib.Cron, mw *maintenances.Windows, logger *slog.Logger) error {
+	for _, window := range mw.AllWindows {
+		if _, err := c.AddFunc(window.Schedule, startWindow(window.Name, mw, logger)); err != nil {
+			return fmt.Errorf("problem adding function to schedule %s: %w", window.Name, err)
+		}
+	}
+	return nil
 }
 
 func startWindow(windowName string, mw *maintenances.Windows, logger *slog.Logger) func() {
