@@ -81,57 +81,44 @@ func LoadWindowsOrDie(ctx context.Context, client *kubernetes.Clientset, namespa
 	return res
 }
 
-//
-//// IsActive is self-explanatory.
-//// It goes back to maximum a year to find the last occurrence before current Time and then compares duration.
-//func (w *Window) IsActive(now time.Time) bool {
-//	start := now.Add(-365 * 24 * time.Hour)
-//	var last time.Time
-//	for {
-//		next := w.Schedule.Next(start)
-//		if next.After(now) {
-//			break
-//		}
-//		last = next
-//		start = next
-//	}
-//	if last.IsZero() {
-//		return false
-//	}
-//	return now.Sub(last) < w.Duration
-//}
-//
-//func (w *Window) ContainsNode(nodeLabels map[string]string) bool {
-//	return w.NodeSelector.Matches(labels.Set(nodeLabels))
-//}
-
-type ActiveWindows struct {
+// Windows keeps track of active maintenance windows and their node selectors.
+// We do not need to store the maintenance windows directly here, only their selectors for quick lookup.
+type Windows struct {
 	mu              *sync.Mutex
 	activeSelectors map[string]labels.Selector
+	// AllWindows is exported to provide access to all defined maintenance windows, not just the active ones. It should be treated as read-only.
+	AllWindows map[string]*Window
 }
 
-func NewActiveWindows() *ActiveWindows {
-	return &ActiveWindows{
+func NewWindows(windows []*Window) *Windows {
+	w := &Windows{
 		activeSelectors: map[string]labels.Selector{},
 		mu:              &sync.Mutex{},
+		AllWindows:      map[string]*Window{},
 	}
+	for _, window := range windows {
+		w.AllWindows[window.Name] = window
+	}
+	return w
 }
 
-func (a *ActiveWindows) Add(window *Window) {
+// Start activates the maintenance window with the given name and node selector.
+func (a *Windows) Start(windowName string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.activeSelectors[window.Name] = window.NodeSelector
-	ActiveMaintenanceWindowGauge.WithLabelValues(window.Name).Set(1)
+	a.activeSelectors[windowName] = a.AllWindows[windowName].NodeSelector
+	ActiveMaintenanceWindowGauge.WithLabelValues(windowName).Set(1)
 }
 
-func (a *ActiveWindows) Remove(window *Window) {
+// End deactivates the maintenance window with the given name.
+func (a *Windows) End(windowName string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	delete(a.activeSelectors, window.Name)
-	ActiveMaintenanceWindowGauge.WithLabelValues(window.Name).Set(0)
+	delete(a.activeSelectors, windowName)
+	ActiveMaintenanceWindowGauge.WithLabelValues(windowName).Set(0)
 }
 
-func (a *ActiveWindows) matchesAnyActiveSelector(nodeLabels map[string]string) bool {
+func (a *Windows) matchesAnyActiveSelector(nodeLabels map[string]string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, selector := range a.activeSelectors {
@@ -142,6 +129,7 @@ func (a *ActiveWindows) matchesAnyActiveSelector(nodeLabels map[string]string) b
 	return false
 }
 
-func (a *ActiveWindows) ContainsNode(n corev1.Node) bool {
+// ContainsNode checks if the given node matches any of the active maintenance window selectors.
+func (a *Windows) ContainsNode(n corev1.Node) bool {
 	return a.matchesAnyActiveSelector(n.Labels)
 }
