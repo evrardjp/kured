@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -65,23 +64,14 @@ func main() {
 	slog.SetDefault(logger)
 	cronLogger := &cronSlogAdapter{logger}
 
-	//var windows []*maintenances.Window
-	//windows = append(windows, &maintenances.Window{
-	//	Name:         "maintenance-a",
-	//	Schedule:     "@every 2s",
-	//	Duration:     10 * time.Second,
-	//	NodeSelector: labels.Everything(),
-	//})
-	//windows = append(windows, &maintenances.Window{
-	//	Name:         "maintenance-b",
-	//	Schedule:     "@every 2s",
-	//	Duration:     1 * time.Second,
-	//	NodeSelector: labels.Everything(),
-	//})
-
 	client := cli.KubernetesClientSetOrDie("", kubeconfig)
 	windows := maintenances.LoadWindowsOrDie(ctx, client, namespace, cmPrefix)
-	activeWindows := maintenances.NewActiveWindows()
+	if len(windows) == 0 {
+		slog.Error("No maintenance windows found - please create at least one maintenance configmap")
+		os.Exit(1)
+	}
+
+	mw := maintenances.NewWindows(windows)
 	positiveConditions := []string{conditions.RebootRequiredConditionType}
 	negativeConditions := []string{conditions.PreventRebootConditionType}
 	maintenanceQueues := maintenances.NewQueues(concurrency)
@@ -97,7 +87,7 @@ func main() {
 
 	// Maintenance manager setup
 	c := cronlib.New(cronlib.WithLogger(cronLogger), cronlib.WithChain(cronlib.SkipIfStillRunning(cronLogger)))
-	loadAllCronJobs(ctx, c, windows, activeWindows, logger)
+	loadAllCronJobs(c, mw, logger)
 	c.Start()
 
 	// Controller handling node events
@@ -131,7 +121,7 @@ func main() {
 				allNodes, _ := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 				for _, n := range allNodes.Items {
 
-					if !activeWindows.ContainsNode(n) {
+					if !mw.ContainsNode(n) {
 						slog.Debug("this node is not under any active maintenance window and is therefore ignored", "node", n.Name)
 						continue
 					}
@@ -217,22 +207,22 @@ func (a *cronSlogAdapter) Error(err error, msg string, keysAndValues ...interfac
 	a.Logger.Error(msg, append([]any{"error", err.Error()}, keysAndValues...)...)
 }
 
-func loadAllCronJobs(ctx context.Context, c *cronlib.Cron, windows []*maintenances.Window, activeWindows *maintenances.ActiveWindows, logger *slog.Logger) {
+func loadAllCronJobs(c *cronlib.Cron, mw *maintenances.Windows, logger *slog.Logger) {
 	logger.Info("You must reload this deployment in case of new or updated maintenance window(s)")
-	for _, window := range windows {
-		_, err := c.AddFunc(window.Schedule, startWindow(window, activeWindows, logger))
+	for _, window := range mw.AllWindows {
+		_, err := c.AddFunc(window.Schedule, startWindow(window.Name, mw, logger))
 		if err != nil {
 			slog.Error("Problem adding function to schedule", "error", err.Error())
 		}
 	}
 }
 
-func startWindow(w *maintenances.Window, activeWindows *maintenances.ActiveWindows, logger *slog.Logger) func() {
+func startWindow(windowName string, mw *maintenances.Windows, logger *slog.Logger) func() {
 	return func() {
-		logger.Info("Starting maintenance window", "window", w.Name)
-		activeWindows.Add(w)
-		time.Sleep(w.Duration)
-		logger.Info("End of maintenance window", "window", w.Name)
-		activeWindows.Remove(w)
+		logger.Info("Starting maintenance window", "window", windowName)
+		mw.Start(windowName)
+		time.Sleep(mw.AllWindows[windowName].Duration)
+		logger.Info("End of maintenance window", "window", windowName)
+		mw.End(windowName)
 	}
 }
