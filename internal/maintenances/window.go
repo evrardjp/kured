@@ -5,11 +5,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	cronlib "github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
@@ -102,3 +104,44 @@ func LoadWindowsOrDie(ctx context.Context, client *kubernetes.Clientset, namespa
 //func (w *Window) ContainsNode(nodeLabels map[string]string) bool {
 //	return w.NodeSelector.Matches(labels.Set(nodeLabels))
 //}
+
+type ActiveWindows struct {
+	mu              *sync.Mutex
+	activeSelectors map[string]labels.Selector
+}
+
+func NewActiveWindows() *ActiveWindows {
+	return &ActiveWindows{
+		activeSelectors: map[string]labels.Selector{},
+		mu:              &sync.Mutex{},
+	}
+}
+
+func (a *ActiveWindows) Add(window *Window) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.activeSelectors[window.Name] = window.NodeSelector
+	ActiveMaintenanceWindowGauge.WithLabelValues(window.Name).Set(1)
+}
+
+func (a *ActiveWindows) Remove(window *Window) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.activeSelectors, window.Name)
+	ActiveMaintenanceWindowGauge.WithLabelValues(window.Name).Set(0)
+}
+
+func (a *ActiveWindows) matchesAnyActiveSelector(nodeLabels map[string]string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, selector := range a.activeSelectors {
+		if selector.Matches(labels.Set(nodeLabels)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *ActiveWindows) ContainsNode(n corev1.Node) bool {
+	return a.matchesAnyActiveSelector(n.Labels)
+}
