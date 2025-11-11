@@ -21,11 +21,11 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: node-reboot-reporter-cluster-role
+  name: node-reboot-reporter-clusterrole
 rules:
   - apiGroups: [ "" ]
     resources: [ "nodes" ]
-    verbs: [ "get", "list" ]
+    verbs: [ "get", "list", "watch" ]
   - apiGroups: [ "" ]
     resources: [ "nodes/status" ]
     verbs: [ "update", "patch" ] # need to remove update asap.
@@ -33,7 +33,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: node-reboot-reporter-es-and-leases-rb
+  name: node-reboot-reporter-rb
   namespace: kube-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -47,11 +47,11 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: node-reboot-reporter-nodes-rb
+  name: node-reboot-reporter-crb
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: node-reboot-reporter-cluster-role
+  name: node-reboot-reporter-clusterrole
 subjects:
   - kind: ServiceAccount
     name: node-reboot-reporter-sa
@@ -63,6 +63,7 @@ metadata:
   name: node-reboot-reporter
   namespace: kube-system
   labels:
+    app: node-reboot-reporter
     system: kured
 spec:
   replicas: 2
@@ -85,7 +86,6 @@ spec:
           image: ghcr.io/kubereboot/node-reboot-reporter:dev
           imagePullPolicy: IfNotPresent
           args:
-            - "--namespace=kube-system"
             - "--concurrency=40"
             - "--scrape-interval=10s"
             - "--debug=true"

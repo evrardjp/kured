@@ -12,11 +12,17 @@ metadata:
   namespace: kube-system
 rules:
   - apiGroups: [ "" ]
-    resources: [ "nodes" ]
+    resources: [ "configmaps" ] # for maintenances
     verbs: [ "get", "list" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-maintenance-scheduler-clusterrole
+rules:
   - apiGroups: [ "" ]
-    resources: [ "configmaps" ]
-    verbs: [ "get", "list" ]
+    resources: [ "nodes" ]
+    verbs: [ "get", "list", "watch" ]
   - apiGroups: [ "" ]
     resources: [ "nodes/status" ]
     verbs: [ "update", "patch" ] # need to remove update asap.
@@ -35,15 +41,29 @@ subjects:
     name: node-maintenance-scheduler-sa
     namespace: kube-system
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-maintenance-scheduler-crb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: node-maintenance-scheduler-clusterrole
+subjects:
+  - kind: ServiceAccount
+    name: node-maintenance-scheduler-sa
+    namespace: kube-system
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: node-maintenance-scheduler
   namespace: kube-system
   labels:
+    app: node-maintenance-scheduler
     system: kured
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: node-maintenance-scheduler # DO NOT EDIT THIS.
@@ -62,6 +82,8 @@ spec:
         - name: node-maintenance-scheduler
           image: ghcr.io/kubereboot/node-maintenance-scheduler:dev
           imagePullPolicy: IfNotPresent
+          args:
+            - "--debug"
           ports:
             - containerPort: 8080
               name: metrics
