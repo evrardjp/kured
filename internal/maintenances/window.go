@@ -2,8 +2,8 @@ package maintenances
 
 import (
 	"context"
-	"os"
-	"strconv"
+	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +20,7 @@ import (
 var (
 	ActiveMaintenanceWindowGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Subsystem: "kured",
-		Name:      "active_maintenance_windoww",
+		Name:      "active_maintenance_windows",
 		Help:      "maintenance window is active if its value is 1",
 	}, []string{"window"})
 )
@@ -32,53 +32,62 @@ type Window struct {
 	Schedule     string
 }
 
-// LoadWindowsOrDie loads maintenance windows from the given namespace, using the given prefix.
-// It returns a list of windows if successfully formatted. It will crash if there was an error loading any of them.
-func LoadWindowsOrDie(ctx context.Context, client *kubernetes.Clientset, namespace, prefix string) []*Window {
-	// TODO, improve by adding listOptions to match a certain label
+// FetchWindows loads maintenance windows from the given namespace, using the given prefix.
+func FetchWindows(ctx context.Context, client *kubernetes.Clientset, namespace, prefix string) ([]*Window, error) {
 	cms, err := client.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		os.Exit(2)
+		return nil, err
 	}
-	parser := cronlib.NewParser(cronlib.Minute | cronlib.Hour | cronlib.Dom | cronlib.Month | cronlib.Dow)
 	var res []*Window
 	for _, cm := range cms.Items {
 		if !strings.HasPrefix(cm.Name, prefix) {
 			continue
 		}
 		d := cm.Data
-		cronExpr := strings.TrimSpace(d["startTime"])
-		if _, err := parser.Parse(cronExpr); err != nil {
-			os.Exit(2)
+		window, err := parseMaintenanceConfigMap(cm.Name, d)
+		if err != nil {
+			return nil, err
 		}
-		durMin, errConv := strconv.Atoi(d["duration"])
-		if errConv != nil {
-			os.Exit(2)
-		}
-		var selector labels.Selector
-		if nsRaw, ok := d["nodeSelector"]; ok && nsRaw != "" {
-			// First, unmarshal YAML or JSON
-			var ls metav1.LabelSelector
-			if err := yaml.Unmarshal([]byte(nsRaw), &ls); err != nil {
-				os.Exit(2)
-			}
-
-			// Convert LabelSelector -> labels.Selector
-			selector, err = metav1.LabelSelectorAsSelector(&ls)
-			if err != nil {
-				os.Exit(2)
-			}
-		} else {
-			selector = labels.Everything()
-		}
-		res = append(res, &Window{
-			Name:         cm.Name,
-			Duration:     time.Duration(durMin) * time.Minute,
-			NodeSelector: selector,
-			Schedule:     d["startTime"],
-		})
+		slog.Debug("maintenance window details", "window", window.Name, "schedule", window.Schedule, "duration", window.Duration.String(), "nodeSelector", window.NodeSelector.String())
+		res = append(res, window)
 	}
-	return res
+	if len(res) == 0 {
+		return nil, fmt.Errorf("no windows found")
+	}
+	return res, nil
+}
+
+func parseMaintenanceConfigMap(name string, d map[string]string) (*Window, error) {
+	if _, errCronParsing := cronlib.ParseStandard(d["startTime"]); errCronParsing != nil {
+		return nil, errCronParsing
+	}
+	duration, errConv := time.ParseDuration(d["duration"])
+	if errConv != nil {
+		return nil, errConv
+	}
+	var selector labels.Selector
+	if nsRaw, ok := d["nodeSelector"]; ok && nsRaw != "" {
+		// First, unmarshal YAML or JSON
+		var ls metav1.LabelSelector
+		if err := yaml.Unmarshal([]byte(nsRaw), &ls); err != nil {
+			return nil, err
+		}
+
+		// Convert LabelSelector -> labels.Selector
+		var errLS error
+		selector, errLS = metav1.LabelSelectorAsSelector(&ls)
+		if errLS != nil {
+			return nil, errLS
+		}
+	} else {
+		selector = labels.Everything()
+	}
+	return &Window{
+		Name:         name,
+		Duration:     duration,
+		NodeSelector: selector,
+		Schedule:     d["startTime"],
+	}, nil
 }
 
 // Windows keeps track of active maintenance windows and their node selectors.
@@ -132,4 +141,24 @@ func (a *Windows) matchesAnyActiveSelector(nodeLabels map[string]string) bool {
 // ContainsNode checks if the given node matches any of the active maintenance window selectors.
 func (a *Windows) ContainsNode(n corev1.Node) bool {
 	return a.matchesAnyActiveSelector(n.Labels)
+}
+
+func (a *Windows) String() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var activeWindows []string
+	for windowName := range a.activeSelectors {
+		activeWindows = append(activeWindows, windowName)
+	}
+	return strings.Join(activeWindows, " | ")
+}
+
+func (a *Windows) ListSelectors() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var activeSelectors []string
+	for _, selector := range a.activeSelectors {
+		activeSelectors = append(activeSelectors, selector.String())
+	}
+	return strings.Join(activeSelectors, " | ")
 }

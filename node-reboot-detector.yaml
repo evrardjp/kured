@@ -32,6 +32,7 @@ metadata:
   name: node-reboot-detector
   namespace: kube-system
   labels:
+    app: node-reboot-detector
     system: kured
 spec:
   selector:
@@ -83,8 +84,7 @@ spec:
             - mountPath: /sentinel
               name: sentinel
               readOnly: true
-          command:
-            - /usr/bin/node-reboot-detector
+          args:
             - --period=5s # Development value. Please increase it in production.
 ---
 apiVersion: v1
