@@ -2,51 +2,57 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: node-reboot-detector-sa
+  name: reboot-required-detector
   namespace: kube-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
-  name: node-reboot-detector-role
-  namespace: kube-system
-rules: []
+  name: "kured:reboot-required-detector"
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "nodes" ]
+    verbs: [ "get" ]
+  - apiGroups: [ "" ]
+    resources: [ "nodes/status" ]
+    verbs: [ "patch" ] # I might need to add "update"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
-  name: node-reboot-detector-rb
-  namespace: kube-system
+  name: reboot-required-detector-binding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: node-reboot-detector-role
+  kind: ClusterRole
+  name: "kured:reboot-required-detector"
 subjects:
   - kind: ServiceAccount
-    name: node-reboot-detector-sa
+    name: reboot-required-detector
     namespace: kube-system
 ---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: node-reboot-detector
+  name: reboot-required-detector
   namespace: kube-system
   labels:
-    app: node-reboot-detector
-    system: kured
+    app.kubernetes.io/name: reboot-required-detector
+    app.kubernetes.io/component: reporter
+    app.kubernetes.io/part-of: kured
 spec:
   selector:
     matchLabels:
-      app: node-reboot-detector
+      app.kubernetes.io/name: reboot-required-detector
   updateStrategy:
     type: RollingUpdate
   template:
     metadata:
       labels:
-        app: node-reboot-detector
-        system: kured
+        app.kubernetes.io/name: reboot-required-detector
+        app.kubernetes.io/component: reporter
+        app.kubernetes.io/part-of: kured
     spec:
-      serviceAccountName: node-reboot-detector-sa
+      serviceAccountName: reboot-required-detector-sa
       tolerations:
         - key: node-role.kubernetes.io/control-plane
           effect: NoSchedule
@@ -59,8 +65,8 @@ spec:
             path: /var/run
             type: Directory
       containers:
-        - name: node-reboot-detector
-          image: ghcr.io/kubereboot/node-reboot-detector:dev
+        - name: reboot-required-detector
+          image: ghcr.io/kubereboot/reboot-required-detector:dev
           imagePullPolicy: IfNotPresent
           securityContext:
             readOnlyRootFilesystem: true
@@ -86,16 +92,21 @@ spec:
               readOnly: true
           args:
             - --period=5s # Development value. Please increase it in production.
+            - --debug # Development value. Please remove it in production.
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: node-reboot-detector
+  name: reboot-required-detector
   namespace: kube-system
+  labels:
+    app.kubernetes.io/name: reboot-required-detector
+    app.kubernetes.io/component: reporter
+    app.kubernetes.io/part-of: kured
 spec:
-  clusterIP: None
+  clusterIP: ""
   selector:
-    app: node-reboot-detector
+    app.kubernetes.io/name: reboot-required-detector
   ports:
     - name: metrics
       port: 8080
