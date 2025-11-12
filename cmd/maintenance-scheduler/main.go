@@ -21,7 +21,7 @@ var (
 )
 
 const (
-	nodeMaintenanceServiceName = "node-maintenance-scheduler"
+	nodeMaintenanceServiceName = "maintenance-scheduler"
 )
 
 func init() {
@@ -30,21 +30,24 @@ func init() {
 
 func main() {
 	var (
-		debug                           bool
-		logFormat                       string
-		kubeconfig, cmPrefix, namespace string
-		metricsHost                     string
-		metricsPort                     int
-		period                          time.Duration
+		cmNamespace string
+		cmPrefix    string
+		debug       bool
+		kubeconfig  string
+		logFormat   string
+		metricsHost string
+		metricsPort int
+		period      time.Duration
 	)
+	flag.StringVar(&cmNamespace, "cm-namespace", "kube-system", "Namespace where maintenance configmaps live")
 	flag.StringVar(&cmPrefix, "config-prefix", "kured-maintenance-", "maintenance configmap prefix")
-	flag.DurationVar(&period, "period", time.Minute, "controller resync and maintenance assigner period")
 	flag.BoolVar(&debug, "debug", false, "Enable debug logging")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional kubeconfig")
 	flag.StringVar(&logFormat, "log-format", "json", "use text or json log format")
 	flag.StringVar(&metricsHost, "metrics-host", "", "host where metrics will listen")
 	flag.IntVar(&metricsPort, "metrics-port", 8080, "port number where metrics will listen")
-	flag.StringVar(&namespace, "namespace", "kube-system", "Namespace where maintenance configmaps live")
+	flag.DurationVar(&period, "period", time.Minute, "controller resync and maintenance assigner period")
+
 	flag.Parse()
 
 	// Load flags from environment variables. Remember the prefix KURED_!
@@ -59,13 +62,13 @@ func main() {
 	cronLogger := &cli.CronSlogAdapter{Logger: logger}
 
 	client := cli.KubernetesClientSetOrDie("", kubeconfig)
-	windows, parsingError := maintenances.FetchWindows(ctx, client, namespace, cmPrefix)
+	windows, parsingError := maintenances.FetchWindows(ctx, client, cmNamespace, cmPrefix)
 	if parsingError != nil {
 		slog.Error("failed to parse maintenance windows", "error", parsingError.Error())
 		os.Exit(1)
 	}
 
-	slog.Info("Starting node-maintenance-scheduler",
+	slog.Info("Starting maintenance-scheduler",
 		"version", version,
 		"debug", debug,
 		"cmPrefix", cmPrefix,

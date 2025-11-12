@@ -146,20 +146,18 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 		return fmt.Errorf("failed to get object %s from nodeLister", objectRef.Name)
 	}
 
-	if underMaintenance, mwName := c.mw.MatchesAnyActiveSelector(node.Labels); underMaintenance {
-		currentCondition := corev1.NodeCondition{
-			Type:               conditions.StringToConditionType(conditions.UnderMaintenanceConditionType),
-			Status:             conditions.BoolToConditionStatus(true),
-			Reason:             "KuredHasMaintenanceWindowConfigMap",
-			Message:            fmt.Sprintf("Config map %s is putting node under maintenance", mwName),
-			LastHeartbeatTime:  metav1.Now(),
-			LastTransitionTime: metav1.Now(),
-		}
-		clientSet := c.client.(*kubernetes.Clientset)
-
-		if err := conditions.UpdateNodeCondition(ctx, clientSet, node.ObjectMeta.Name, currentCondition); err != nil {
-			return fmt.Errorf("failed to set UnderMaintenance condition %w", err)
-		}
+	underMaintenance, mwName := c.mw.MatchesAnyActiveSelector(node.Labels)
+	currentCondition := corev1.NodeCondition{
+		Type:               conditions.StringToConditionType(conditions.UnderMaintenanceConditionType),
+		Status:             conditions.BoolToConditionStatus(underMaintenance),
+		Reason:             "KuredHasMaintenanceWindowConfigMap",
+		Message:            fmt.Sprintf("Config map %s is putting node under maintenance", mwName),
+		LastHeartbeatTime:  metav1.Now(),
+		LastTransitionTime: metav1.Now(),
+	}
+	clientSet := c.client.(*kubernetes.Clientset)
+	if err := conditions.UpdateNodeCondition(ctx, clientSet, node.ObjectMeta.Name, currentCondition); err != nil {
+		return fmt.Errorf("failed to set UnderMaintenance condition %w", err)
 	}
 	return nil
 }

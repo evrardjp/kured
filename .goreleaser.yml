@@ -18,9 +18,9 @@ builds:
     flags:
       - -trimpath
 
-  - id: "node-reboot-detector"
-    main: ./cmd/node-reboot-detector
-    binary: node-reboot-detector
+  - id: "reboot-required-detector"
+    main: ./cmd/reboot-required-detector
+    binary: reboot-required-detector
     env:
       - CGO_ENABLED=0
     targets:
@@ -33,24 +33,9 @@ builds:
     flags:
       - -trimpath
 
-  - id: "node-reboot-reporter"
-    main: ./cmd/node-reboot-reporter
-    binary: node-reboot-reporter
-    env:
-      - CGO_ENABLED=0
-    targets:
-      - linux_amd64_v1
-      - linux_arm64
-      - linux_arm_v7
-    ldflags:
-      - -s -w -X main.version={{ if .IsSnapshot }}{{ .ShortCommit }}{{ else }}{{ .Version }}{{ end }}
-    mod_timestamp: "{{ .CommitTimestamp }}"
-    flags:
-      - -trimpath
-
-  - id: "node-maintenance-scheduler"
-    main: ./cmd/node-maintenance-scheduler
-    binary: node-maintenance-scheduler
+  - id: "maintenance-scheduler"
+    main: ./cmd/maintenance-scheduler
+    binary: maintenance-scheduler
     env:
       - CGO_ENABLED=0
     targets:
