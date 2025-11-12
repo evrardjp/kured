@@ -11,7 +11,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	cronlib "github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
@@ -127,20 +126,15 @@ func (a *Windows) End(windowName string) {
 	ActiveMaintenanceWindowGauge.WithLabelValues(windowName).Set(0)
 }
 
-func (a *Windows) matchesAnyActiveSelector(nodeLabels map[string]string) bool {
+func (a *Windows) MatchesAnyActiveSelector(nodeLabels map[string]string) (bool, string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for _, selector := range a.activeSelectors {
+	for mwName, selector := range a.activeSelectors {
 		if selector.Matches(labels.Set(nodeLabels)) {
-			return true
+			return true, mwName
 		}
 	}
-	return false
-}
-
-// ContainsNode checks if the given node matches any of the active maintenance window selectors.
-func (a *Windows) ContainsNode(n corev1.Node) bool {
-	return a.matchesAnyActiveSelector(n.Labels)
+	return false, ""
 }
 
 func (a *Windows) String() string {
