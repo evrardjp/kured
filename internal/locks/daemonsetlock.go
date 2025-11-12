@@ -1,8 +1,8 @@
-// Package daemonsetlock provides mechanisms for leader election and locking
+// Package locks provide mechanisms for leader election and locking
 // using Kubernetes DaemonSets. It enables distributed coordination of operations
 // (such as reboots) by ensuring only one node acts as the leader at any time,
 // leveraging Kubernetes primitives for safe, atomic locking in clusters.
-package daemonsetlock
+package locks
 
 import (
 	"context"
@@ -22,19 +22,6 @@ const (
 	k8sAPICallRetrySleep   = 5 * time.Second // How much time to wait in between retrying a k8s API call
 	k8sAPICallRetryTimeout = 5 * time.Minute // How long to wait until we determine that the k8s API is definitively unavailable
 )
-
-// Lock defines the interface for acquiring, releasing, and checking
-// the status of a reboot coordination lock.
-type Lock interface {
-	Acquire() (bool, error)
-	Release() error
-}
-
-// GenericLock holds the configuration for lock TTL and the delay before releasing it.
-type GenericLock struct {
-	TTL          time.Duration
-	releaseDelay time.Duration
-}
 
 // NodeMeta contains metadata about a node relevant to scheduling decisions.
 type NodeMeta struct {
@@ -81,39 +68,6 @@ type multiLockAnnotationValue struct {
 	LockAnnotations []LockAnnotationValue `json:"locks"`
 }
 
-// New creates a daemonsetLock object containing the necessary data for follow up k8s requests
-func New(client *kubernetes.Clientset, nodeID, namespace, name, annotation string, TTL time.Duration, concurrency int, lockReleaseDelay time.Duration) Lock {
-	if concurrency > 1 {
-		return &DaemonSetMultiLock{
-			GenericLock: GenericLock{
-				TTL:          TTL,
-				releaseDelay: lockReleaseDelay,
-			},
-			DaemonSetLock: DaemonSetLock{
-				client:     client,
-				nodeID:     nodeID,
-				namespace:  namespace,
-				name:       name,
-				annotation: annotation,
-			},
-			maxOwners: concurrency,
-		}
-	}
-	return &DaemonSetSingleLock{
-		GenericLock: GenericLock{
-			TTL:          TTL,
-			releaseDelay: lockReleaseDelay,
-		},
-		DaemonSetLock: DaemonSetLock{
-			client:     client,
-			nodeID:     nodeID,
-			namespace:  namespace,
-			name:       name,
-			annotation: annotation,
-		},
-	}
-}
-
 // GetDaemonSet returns the named DaemonSet resource from the DaemonSetLock's configured client
 func (dsl *DaemonSetLock) GetDaemonSet(sleep, timeout time.Duration) (*v1.DaemonSet, error) {
 	var ds *v1.DaemonSet
@@ -155,7 +109,7 @@ func (dsl *DaemonSetSingleLock) Acquire() (bool, error) {
 		}
 
 		value := LockAnnotationValue{
-			NodeID:   dsl.nodeID,
+			NodeID:  dsl.nodeID,
 			Created: time.Now().UTC(), TTL: dsl.TTL,
 		}
 		valueBytes, err := json.Marshal(&value)

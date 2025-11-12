@@ -15,7 +15,8 @@ const (
 
 const (
 	// InProgressMaintenanceConditionType is set by maintenance-scheduler when a node is undergoing maintenance (e.g., being rebooted).
-	InProgressMaintenanceConditionType                = "kured.dev/maintenance-in-progress"
-	InProgressMaintenanceConditionSuccessReason       = "KuredStartedMaintenance"
-	InProgressMaintenanceConditionBadConditionsReason = "KuredPrerequisitesConditionsUnmet"
+	InProgressMaintenanceConditionType                            = "kured.dev/maintenance-in-progress"
+	InProgressMaintenanceConditionSuccessReason                   = "KuredStartedMaintenance"
+	InProgressMaintenanceConditionBadConditionsReason             = "KuredPrerequisitesConditionsUnmet"
+	InProgressMaintenanceConditionTooManyNodesInMaintenanceReason = "KuredTooManyNodesCurrentlyInMaintenance"
 )
