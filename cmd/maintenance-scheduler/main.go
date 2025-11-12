@@ -32,6 +32,7 @@ func main() {
 	var (
 		cmNamespace string
 		cmPrefix    string
+		concurrency int
 		debug       bool
 		kubeconfig  string
 		logFormat   string
@@ -41,6 +42,7 @@ func main() {
 	)
 	flag.StringVar(&cmNamespace, "cm-namespace", "kube-system", "Namespace where maintenance configmaps live")
 	flag.StringVar(&cmPrefix, "config-prefix", "kured-maintenance-", "maintenance configmap prefix")
+	flag.IntVar(&concurrency, "concurrency", 1, "Number of concurrent nodes actively in maintenance")
 	flag.BoolVar(&debug, "debug", false, "Enable debug logging")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional kubeconfig")
 	flag.StringVar(&logFormat, "log-format", "json", "use text or json log format")
@@ -97,6 +99,7 @@ func main() {
 	controller := NewController(logger, client,
 		kubeInformerFactory.Core().V1().Nodes(),
 		mw,
+		concurrency,
 	)
 
 	// The Start method is non-blocking and runs all registered informers in a dedicated goroutine.

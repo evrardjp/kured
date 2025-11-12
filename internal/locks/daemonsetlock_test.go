@@ -1,4 +1,4 @@
-package daemonsetlock
+package locks
 
 import (
 	"reflect"
