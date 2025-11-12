@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -11,14 +10,10 @@ import (
 
 	"github.com/kubereboot/kured/internal/cli"
 	"github.com/kubereboot/kured/internal/maintenances"
-	"github.com/kubereboot/kured/pkg/conditions"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	cronlib "github.com/robfig/cron/v3"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	cronlib "github.com/robfig/cron/v3" // same as kubernetes
 	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes"
 )
 
 var (
@@ -40,10 +35,8 @@ func main() {
 		kubeconfig, cmPrefix, namespace string
 		metricsHost                     string
 		metricsPort                     int
-		concurrency                     int
 		period                          time.Duration
 	)
-	flag.IntVar(&concurrency, "concurrency", 1, "Maximum number of nodes to be put under maintenance concurrently")
 	flag.StringVar(&cmPrefix, "config-prefix", "kured-maintenance-", "maintenance configmap prefix")
 	flag.DurationVar(&period, "period", time.Minute, "controller resync and maintenance assigner period")
 	flag.BoolVar(&debug, "debug", false, "Enable debug logging")
@@ -72,21 +65,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	mw := maintenances.NewWindows(windows)
-	positiveConditions := []string{conditions.RebootRequiredConditionType}
-	negativeConditions := []string{conditions.PreventRebootConditionType}
-	maintenanceQueues := maintenances.NewQueues(concurrency)
-
 	slog.Info("Starting node-maintenance-scheduler",
 		"version", version,
 		"debug", debug,
 		"cmPrefix", cmPrefix,
-		"concurrency", concurrency,
 		"period", period,
 		"knownMaintenanceWindows", len(windows),
 	)
 
+	// Todo, update the controller to dynamically reload windows without restart by watching cms
+	// delete of the cm would delete the attached cronjobs
+	// modification would delete and add the cronjobs
+	// addition would add the cronjobs
 	slog.Info("You must reload this deployment in case of new or updated maintenance window(s)")
+
+	mw := maintenances.NewWindows(windows)
 
 	// Maintenance manager setup
 	c := cronlib.New(cronlib.WithLogger(cronLogger), cronlib.WithChain(cronlib.SkipIfStillRunning(cronLogger)))
@@ -96,13 +89,11 @@ func main() {
 	}
 	c.Start()
 
-	// Controller handling node events
+	// Controller handling node events to guarantee the placement of nodes into maintenance if they belong to an active window
 	kubeInformerFactory := informers.NewSharedInformerFactory(client, period)
 	controller := NewController(logger, client,
 		kubeInformerFactory.Core().V1().Nodes(),
-		positiveConditions,
-		negativeConditions,
-		maintenanceQueues,
+		mw,
 	)
 
 	// The Start method is non-blocking and runs all registered informers in a dedicated goroutine.
@@ -114,73 +105,12 @@ func main() {
 		}
 	}()
 
-	// Now that:
-	// - all the maintenance windows are set up
-	// - the controller is running and watching node changes
-	// We can start processing nodes if they belong to a maintenance window
-
-	go startNodeMaintenance(ctx, period, client, mw, positiveConditions, negativeConditions, maintenanceQueues)
-
 	// Closes on Ctrl-C
 	http.Handle("/metrics", promhttp.Handler())
 	if err := http.ListenAndServe(fmt.Sprintf("%s:%d", metricsHost, metricsPort), nil); err != nil {
 		slog.Error(fmt.Sprintf("unrecoverable error - failed to listen on metrics port: %v", err))
 		os.Exit(1)
 	} // #nosec G114
-}
-
-// need to fix the leave node maintenance part.
-func startNodeMaintenance(ctx context.Context, period time.Duration, client *kubernetes.Clientset, mw *maintenances.Windows, positiveConditions []string, negativeConditions []string, maintenanceQueues *maintenances.Queues) {
-	ticker := time.NewTicker(period)
-	defer ticker.Stop()
-	for {
-		select {
-		case t := <-ticker.C:
-			slog.Debug("new tick", "activeWindows", mw.String(), "activeSelectors", mw.ListSelectors(), "tick", t.Unix())
-			allNodes, _ := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-			for _, n := range allNodes.Items {
-				slog.Debug("analysing node", "tick", t.Unix(), "node", n.ObjectMeta.Name)
-				if !mw.ContainsNode(n) {
-					slog.Debug("this node is not under any active maintenance window and is therefore ignored", "node", n.ObjectMeta.Name, "tick", t.Unix())
-					continue
-				}
-
-				// Safety net to prevent a race condition where a node no longer matches the conditions between the informer change and this loop
-				if !conditions.Matches(n.Status.Conditions, positiveConditions, negativeConditions) {
-					// A node not matching the conditions anymore should be removed from all queues
-					if removed := maintenanceQueues.Dequeue(n.ObjectMeta.Name); removed {
-						slog.Info("Node removed from maintenance queues as it no longer matches conditions", "node", n.ObjectMeta.Name, "tick", t.Unix())
-					}
-					continue
-				}
-
-				// Node matches an active maintenance window and needs maintenance
-				if active := maintenanceQueues.ProcessNode(n.ObjectMeta.Name); !active {
-					slog.Debug("Node cannot be moved to active maintenance - concurrency limit reached or node not found in pending queue", "node", n.ObjectMeta.Name, "tick", t.Unix())
-					continue
-				}
-
-				currentCondition := v1.NodeCondition{
-					Type:               conditions.StringToConditionType(conditions.UnderMaintenanceConditionType),
-					Status:             conditions.BoolToConditionStatus(true),
-					Reason:             "Node under maintenance",
-					Message:            fmt.Sprintf("%s is putting node under maintenance", nodeMaintenanceServiceName),
-					LastHeartbeatTime:  metav1.Now(),
-					LastTransitionTime: metav1.Now(),
-				}
-
-				if err := conditions.UpdateNodeCondition(ctx, client, n.ObjectMeta.Name, currentCondition); err != nil {
-					slog.Error("Failed to set UnderMaintenance condition - needs human intervention as it will eventually block the queue", "node", n.ObjectMeta.Name, "tick", t.Unix(), "error", err.Error())
-					continue
-				}
-				slog.Info("Node successfully moved to active maintenance", "node", n.ObjectMeta.Name, "tick", t.Unix())
-			}
-
-		case <-ctx.Done():
-			slog.Info("Shutting down maintenance assigner")
-			return
-		}
-	}
 }
 
 func loadAllCronJobs(c *cronlib.Cron, mw *maintenances.Windows, logger *slog.Logger) error {

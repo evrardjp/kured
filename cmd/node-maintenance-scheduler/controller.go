@@ -11,6 +11,7 @@ import (
 	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -22,18 +23,16 @@ import (
 // Controller watches Node updates/deletes and processes them via a typed workQueue.
 // It assigns nodes into maintenance queues based on their conditions, ignoring maintenance windows.
 type Controller struct {
-	logger             *slog.Logger
-	client             kubernetes.Interface
-	nodeLister         corev1listers.NodeLister
-	workQueue          workqueue.TypedRateLimitingInterface[cache.ObjectName]
-	informer           cache.SharedIndexInformer
-	positiveConditions []string
-	negativeConditions []string
-	maintenanceQueues  *maintenances.Queues
+	logger     *slog.Logger
+	client     kubernetes.Interface
+	nodeLister corev1listers.NodeLister
+	workQueue  workqueue.TypedRateLimitingInterface[cache.ObjectName]
+	informer   cache.SharedIndexInformer
+	mw         *maintenances.Windows
 }
 
 // NewController creates a new instance of the Node controller, watching for node condition changes, regardless of maintenance windows.
-func NewController(logger *slog.Logger, client kubernetes.Interface, nodeInformer corev1informers.NodeInformer, positiveConditions []string, negativeConditions []string, queues *maintenances.Queues) *Controller {
+func NewController(logger *slog.Logger, client kubernetes.Interface, nodeInformer corev1informers.NodeInformer, mw *maintenances.Windows) *Controller {
 	// Modern typed rate limiter setup
 	rateLimiter := workqueue.NewTypedMaxOfRateLimiter(
 		workqueue.NewTypedItemExponentialFailureRateLimiter[cache.ObjectName](5*time.Millisecond, 1000*time.Second),
@@ -46,11 +45,7 @@ func NewController(logger *slog.Logger, client kubernetes.Interface, nodeInforme
 		nodeLister: nodeInformer.Lister(),
 		workQueue:  workqueue.NewTypedRateLimitingQueue(rateLimiter),
 		informer:   nodeInformer.Informer(),
-		// positiveConditions are conditions that, when present on a node, indicate it should be scheduled for maintenance
-		positiveConditions: positiveConditions,
-		// negativeConditions are conditions that, when present on a node, indicate it should NOT be scheduled for maintenance
-		negativeConditions: negativeConditions,
-		maintenanceQueues:  queues,
+		mw:         mw,
 	}
 
 	// Setting up event handlers for node changes to catch status updates (nodes enters or leaves a condition that is caught for maintenance reasons)
@@ -59,6 +54,7 @@ func NewController(logger *slog.Logger, client kubernetes.Interface, nodeInforme
 		// - A new node has received a condition before the informer has synced, and we miss it
 		// - A node has multiple conditions changing at once, and we miss one of them
 		// - An update is relevant now but might not be when we handle the workQueue
+		// - We ignore all delete events
 		AddFunc: func(obj interface{}) {
 			object := obj.(*corev1.Node)
 			if object == nil {
@@ -68,13 +64,6 @@ func NewController(logger *slog.Logger, client kubernetes.Interface, nodeInforme
 		},
 		UpdateFunc: func(old, new interface{}) {
 			object := new.(*corev1.Node)
-			if object == nil {
-				return
-			}
-			c.enqueueNode(object)
-		},
-		DeleteFunc: func(obj interface{}) {
-			object := obj.(*corev1.Node)
 			if object == nil {
 				return
 			}
@@ -130,7 +119,7 @@ func (c *Controller) processNextItem(ctx context.Context) bool {
 	defer c.workQueue.Done(objRef)
 
 	if err := c.syncHandler(ctx, objRef); err != nil {
-		c.logger.Error("Error syncing node", "objRef", objRef, "err", err)
+		c.logger.Error("Error syncing node", "objRef", objRef, "error", err)
 		c.workQueue.AddRateLimited(objRef)
 		return true
 	}
@@ -148,28 +137,28 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
-			c.maintenanceQueues.Dequeue(objectRef.Name)
 			return nil
 		}
 		return fmt.Errorf("failed to get node %q: %w", objectRef, err)
 	}
 
 	if node == nil {
-		return fmt.Errorf("node %q not found", objectRef.Name)
+		return fmt.Errorf("failed to get object %s from nodeLister", objectRef.Name)
 	}
 
-	// Only process nodes that have positive conditions and do not have negative conditions
-	// push node to pending queue if it matches
-	needsMaintenance := conditions.Matches(node.Status.Conditions, c.positiveConditions, c.negativeConditions)
-	if needsMaintenance {
-		added := c.maintenanceQueues.Enqueue(node.Name)
-		if added {
-			c.logger.Debug("Node added to pending maintenance queue", "node", node.Name)
+	if underMaintenance, mwName := c.mw.MatchesAnyActiveSelector(node.Labels); underMaintenance {
+		currentCondition := corev1.NodeCondition{
+			Type:               conditions.StringToConditionType(conditions.UnderMaintenanceConditionType),
+			Status:             conditions.BoolToConditionStatus(true),
+			Reason:             "KuredHasMaintenanceWindowConfigMap",
+			Message:            fmt.Sprintf("Config map %s is putting node under maintenance", mwName),
+			LastHeartbeatTime:  metav1.Now(),
+			LastTransitionTime: metav1.Now(),
 		}
-	} else {
-		removed := c.maintenanceQueues.Dequeue(node.Name)
-		if removed {
-			c.logger.Debug("Node removed from maintenance queues", "node", node.Name)
+		clientSet := c.client.(*kubernetes.Clientset)
+
+		if err := conditions.UpdateNodeCondition(ctx, clientSet, node.ObjectMeta.Name, currentCondition); err != nil {
+			return fmt.Errorf("failed to set UnderMaintenance condition %w", err)
 		}
 	}
 	return nil
