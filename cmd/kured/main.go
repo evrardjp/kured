@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/kubereboot/kured/internal/cli"
-	"github.com/kubereboot/kured/internal/daemonsetlock"
 	"github.com/kubereboot/kured/internal/k8soperations"
+	"github.com/kubereboot/kured/internal/locks"
 	"github.com/kubereboot/kured/internal/notifications"
 	"github.com/kubereboot/kured/internal/timewindow"
 	"github.com/kubereboot/kured/pkg/blockers"
@@ -248,7 +248,8 @@ func main() {
 		slog.Info("Lock release delay not set, lock will be released immediately after rebooting", "node", nodeID)
 	}
 
-	lock := daemonsetlock.New(client, nodeID, dsNamespace, dsName, lockAnnotation, lockTTL, concurrency, lockReleaseDelay)
+	lockType := "ds"
+	lock := locks.New(client, nodeID, dsNamespace, dsName, lockAnnotation, lockType, lockTTL, concurrency, lockReleaseDelay)
 
 	go rebootAsRequired(nodeID, rebooter, rebootChecker, blockCheckers, window, lock, client, period, notifier)
 
@@ -273,7 +274,7 @@ func validateNodeLabels(preRebootNodeLabels []string, postRebootNodeLabels []str
 	return nil
 }
 
-func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.Checker, blockCheckers []blockers.RebootBlocker, window *timewindow.TimeWindow, lock daemonsetlock.Lock, client *kubernetes.Clientset, period time.Duration, notifier notifications.Notifier) {
+func rebootAsRequired(nodeID string, rebooter reboot.Rebooter, checker checkers.Checker, blockCheckers []blockers.RebootBlocker, window *timewindow.TimeWindow, lock locks.Lock, client *kubernetes.Clientset, period time.Duration, notifier notifications.Notifier) {
 
 	preferNoScheduleTaint := k8soperations.NewTaint(client, nodeID, preferNoScheduleTaintName, v1.TaintEffectPreferNoSchedule)
 
