@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/kubereboot/kured/internal/cli"
-	conditions2 "github.com/kubereboot/kured/internal/conditions"
+	"github.com/kubereboot/kured/internal/conditions"
 	"github.com/kubereboot/kured/pkg/checkers"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -116,14 +116,14 @@ func maintainRebootRequiredCondition(period time.Duration, rebootChecker checker
 			rebootRequiredGauge.WithLabelValues(nodeID).Set(0)
 		}
 		nodeCondition := v1.NodeCondition{
-			Type:               conditions2.StringToConditionType(conditions2.RebootRequiredConditionType),
-			Status:             conditions2.BoolToConditionStatus(rebootRequired),
-			Reason:             conditions2.RebootRequiredConditionReason,
+			Type:               conditions.StringToConditionType(conditions.RebootRequiredConditionType),
+			Status:             conditions.BoolToConditionStatus(rebootRequired),
+			Reason:             conditions.RebootRequiredConditionReason,
 			Message:            fmt.Sprintf("Kured sentinel check result is %t", rebootRequired),
 			LastHeartbeatTime:  metav1.Now(),
 			LastTransitionTime: metav1.Now(),
 		}
-		if err := conditions2.UpdateNodeCondition(ctx, client, nodeID, nodeCondition); err != nil {
+		if err := conditions.UpdateNodeCondition(ctx, client, nodeID, nodeCondition, period); err != nil {
 			slog.Error("failed to update node condition", "error", err)
 		}
 	}

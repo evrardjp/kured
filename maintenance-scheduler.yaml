@@ -80,7 +80,7 @@ spec:
         app.kubernetes.io/component: reporter
         app.kubernetes.io/part-of: kured
     spec:
-      serviceAccountName: maintenance-scheduler-sa
+      serviceAccountName: maintenance-scheduler
       tolerations:
         - key: node-role.kubernetes.io/control-plane
           effect: NoSchedule

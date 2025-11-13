@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/kubereboot/kured/internal/conditions"
@@ -40,10 +41,12 @@ type Controller struct {
 	mw         *maintenances.Windows
 	// these will only be used to move the node from in-maintenance state to actively maintained state, based on capacity
 	maxNodesConcurrentlyMaintained int
+	// conditionHeartbeatPeriod is the minimum time to spend between nodeConditions heartbeats. Prevents overloading the API server.
+	conditionHeartbeatPeriod time.Duration
 }
 
 // NewController creates a new instance of the Node controller, watching for node condition changes, regardless of maintenance windows.
-func NewController(logger *slog.Logger, client kubernetes.Interface, nodeInformer corev1informers.NodeInformer, mw *maintenances.Windows, maxNodesConcurrentlyMaintained int) *Controller {
+func NewController(logger *slog.Logger, client kubernetes.Interface, nodeInformer corev1informers.NodeInformer, mw *maintenances.Windows, maxNodesConcurrentlyMaintained int, heartbeat time.Duration) *Controller {
 	// Modern typed rate limiter setup
 	rateLimiter := workqueue.NewTypedMaxOfRateLimiter(
 		workqueue.NewTypedItemExponentialFailureRateLimiter[cache.ObjectName](5*time.Millisecond, 1000*time.Second),
@@ -58,6 +61,7 @@ func NewController(logger *slog.Logger, client kubernetes.Interface, nodeInforme
 		informer:                       nodeInformer.Informer(),
 		mw:                             mw,
 		maxNodesConcurrentlyMaintained: maxNodesConcurrentlyMaintained,
+		conditionHeartbeatPeriod:       heartbeat,
 	}
 
 	// Setting up event handlers for node changes to catch status updates (nodes enters or leaves a condition that is caught for maintenance reasons)
@@ -172,7 +176,7 @@ func (c *Controller) applyMaintenanceWindowCondition(ctx context.Context, object
 		LastTransitionTime: metav1.Now(),
 	}
 	clientSet := c.client.(*kubernetes.Clientset)
-	if err := conditions.UpdateNodeCondition(ctx, clientSet, node.ObjectMeta.Name, currentCondition); err != nil {
+	if err := conditions.UpdateNodeCondition(ctx, clientSet, node.ObjectMeta.Name, currentCondition, c.conditionHeartbeatPeriod); err != nil {
 		return fmt.Errorf("failed to set %s condition %w", conditions.UnderMaintenanceConditionType, err)
 	}
 	return nil
@@ -209,32 +213,34 @@ func (c *Controller) applyInMaintenanceCondition(ctx context.Context, objectRef 
 
 	clientSet := c.client.(*kubernetes.Clientset)
 
-	// basic checks first: the node itself
+	// First reason to put a false condition: Not all the criteria are matched
 	if result, reason := conditions.Matches(node.Status.Conditions, requiredConditionTypes, forbiddenConditionTypes); !result {
 		inProgressCondition.Status = conditions.BoolToConditionStatus(false)
 		inProgressCondition.Reason = conditions.InProgressMaintenanceConditionBadConditionsReason
 		inProgressCondition.Message = fmt.Sprintf("condition %s is not matching expectations for entering maintenance", reason)
 
-		if err := conditions.UpdateNodeCondition(ctx, clientSet, node.ObjectMeta.Name, inProgressCondition); err != nil {
+		if err := conditions.UpdateNodeCondition(ctx, clientSet, node.ObjectMeta.Name, inProgressCondition, c.conditionHeartbeatPeriod); err != nil {
 			return fmt.Errorf("failed to set %s condition %w", conditions.InProgressMaintenanceConditionType, err)
 		}
 	}
 	// Todo: Add Label matchers (see https://github.com/kubereboot/kured/pull/1215)
 
+	// Second reason to put a false condition: Too many nodes have the condition, cannot add a new one
 	nodes, errListing := conditions.ListAllNodesWithConditionType(ctx, clientSet, conditions.InProgressMaintenanceConditionType)
+	c.logger.Debug(fmt.Sprintf("nodes currently in maintenance: %s", nodes))
 	if errListing != nil {
 		return fmt.Errorf("failed to list all nodes: %w", err)
 	}
-	if len(nodes) >= c.maxNodesConcurrentlyMaintained {
+	if len(nodes) >= c.maxNodesConcurrentlyMaintained && !slices.Contains(nodes, node.ObjectMeta.Name) {
 		inProgressCondition.Status = conditions.BoolToConditionStatus(false)
 		inProgressCondition.Reason = conditions.InProgressMaintenanceConditionTooManyNodesInMaintenanceReason
 		inProgressCondition.Message = fmt.Sprintf("cannot progress maintenance until other nodes have ended their maintenance")
-		if err := conditions.UpdateNodeCondition(ctx, clientSet, node.ObjectMeta.Name, inProgressCondition); err != nil {
+		if err := conditions.UpdateNodeCondition(ctx, clientSet, node.ObjectMeta.Name, inProgressCondition, c.conditionHeartbeatPeriod); err != nil {
 			return fmt.Errorf("failed to set %s condition %w", conditions.InProgressMaintenanceConditionType, err)
 		}
 	}
 
-	if err := conditions.UpdateNodeCondition(ctx, clientSet, node.ObjectMeta.Name, inProgressCondition); err != nil {
+	if err := conditions.UpdateNodeCondition(ctx, clientSet, node.ObjectMeta.Name, inProgressCondition, c.conditionHeartbeatPeriod); err != nil {
 		return fmt.Errorf("failed to set %s condition %w", conditions.InProgressMaintenanceConditionType, err)
 	}
 	return nil

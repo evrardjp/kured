@@ -100,6 +100,7 @@ func main() {
 		kubeInformerFactory.Core().V1().Nodes(),
 		mw,
 		concurrency,
+		period,
 	)
 
 	// The Start method is non-blocking and runs all registered informers in a dedicated goroutine.
