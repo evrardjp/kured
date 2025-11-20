@@ -1,4 +1,4 @@
-package k8soperations
+package labels
 
 import (
 	"context"

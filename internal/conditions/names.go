@@ -20,3 +20,9 @@ const (
 	InProgressMaintenanceConditionBadConditionsReason             = "KuredPrerequisitesConditionsUnmet"
 	InProgressMaintenanceConditionTooManyNodesInMaintenanceReason = "KuredTooManyNodesCurrentlyInMaintenance"
 )
+
+const (
+	// InhibitedRebootConditionType is set by reboot-inhibitor to prevent a reboot.
+	InhibitedRebootConditionType   = "kured.dev/reboot-inhibited"
+	InhibitedRebootConditionReason = "KuredInhibitorDetected"
+)

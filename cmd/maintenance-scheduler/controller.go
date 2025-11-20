@@ -217,7 +217,11 @@ func (c *Controller) applyInMaintenanceCondition(ctx context.Context, objectRef 
 	if result, reason := conditions.Matches(node.Status.Conditions, requiredConditionTypes, forbiddenConditionTypes); !result {
 		inProgressCondition.Status = conditions.BoolToConditionStatus(false)
 		inProgressCondition.Reason = conditions.InProgressMaintenanceConditionBadConditionsReason
-		inProgressCondition.Message = fmt.Sprintf("condition %s is not matching expectations for entering maintenance", reason)
+		if reason != nil {
+			inProgressCondition.Message = fmt.Sprintf("condition %s prevents entering maintenance", reason.Type)
+		} else {
+			inProgressCondition.Message = "a required condition is not present on the node"
+		}
 
 		if err := conditions.UpdateNodeCondition(ctx, clientSet, node.ObjectMeta.Name, inProgressCondition, c.conditionHeartbeatPeriod); err != nil {
 			return fmt.Errorf("failed to set %s condition %w", conditions.InProgressMaintenanceConditionType, err)

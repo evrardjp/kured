@@ -3,9 +3,9 @@ before:
   hooks:
     - go mod tidy
 builds:
-  - id: "kured"
-    main: ./cmd/kured
-    binary: kured
+  - id: "reboot-daemon"
+    main: ./cmd/reboot-daemon
+    binary: reboot-daemon
     env:
       - CGO_ENABLED=0
     targets:
@@ -36,6 +36,21 @@ builds:
   - id: "maintenance-scheduler"
     main: ./cmd/maintenance-scheduler
     binary: maintenance-scheduler
+    env:
+      - CGO_ENABLED=0
+    targets:
+      - linux_amd64_v1
+      - linux_arm64
+      - linux_arm_v7
+    ldflags:
+      - -s -w -X main.version={{ if .IsSnapshot }}{{ .ShortCommit }}{{ else }}{{ .Version }}{{ end }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    flags:
+      - -trimpath
+
+  - id: "reboot-inhibitors"
+    main: ./cmd/reboot-inhibitors
+    binary: reboot-inhibitors
     env:
       - CGO_ENABLED=0
     targets:

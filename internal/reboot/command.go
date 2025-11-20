@@ -3,11 +3,12 @@ package reboot
 import (
 	"bytes"
 	"fmt"
-	"github.com/google/shlex"
 	"log/slog"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/google/shlex"
 )
 
 // CommandRebooter holds context-information for a reboot with command

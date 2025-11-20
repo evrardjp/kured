@@ -6,16 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/apimachinery/pkg/labels"
-)
-
-var (
-	ActiveMaintenanceWindowGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Subsystem: "kured",
-		Name:      "active_maintenance_windows",
-		Help:      "maintenance window is active if its value is 1",
-	}, []string{"window"})
 )
 
 type Window struct {

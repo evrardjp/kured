@@ -2,71 +2,71 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: reboot-required-detector
+  name: reboot-daemon
   namespace: kube-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: "kured:reboot-required-detector"
+  name: "kured:reboot-daemon"
 rules:
-  - apiGroups: [ "" ]
-    resources: [ "nodes" ]
-    verbs: [ "get" ]
-  - apiGroups: [ "" ]
-    resources: [ "nodes/status" ]
-    verbs: [ "update", "patch" ]
+  # Allow kured to read spec.unschedulable
+  # Allow kubectl to drain/uncordon
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs:     ["get", "patch", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs:     ["list","delete","get"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs:     ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: reboot-required-detector-binding
+  name: "kured:reboot-daemon"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: "kured:reboot-required-detector"
+  name: "kured:reboot-daemon"
 subjects:
   - kind: ServiceAccount
-    name: reboot-required-detector
+    name: reboot-daemon
     namespace: kube-system
 ---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: reboot-required-detector
+  name: reboot-daemon
   namespace: kube-system
   labels:
-    app.kubernetes.io/name: reboot-required-detector
+    app.kubernetes.io/name: reboot-daemon
     app.kubernetes.io/component: reporter
     app.kubernetes.io/part-of: kured
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: reboot-required-detector
+      app.kubernetes.io/name: reboot-daemon
   updateStrategy:
     type: RollingUpdate
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: reboot-required-detector
+        app.kubernetes.io/name: reboot-daemon
         app.kubernetes.io/component: reporter
         app.kubernetes.io/part-of: kured
     spec:
-      serviceAccountName: reboot-required-detector
+      serviceAccountName: reboot-daemon
       tolerations:
         - key: node-role.kubernetes.io/control-plane
           effect: NoSchedule
         - key: node-role.kubernetes.io/master
           effect: NoSchedule
       restartPolicy: Always
-      volumes:
-        - name: sentinel
-          hostPath:
-            path: /var/run
-            type: Directory
       containers:
-        - name: reboot-required-detector
-          image: ghcr.io/kubereboot/reboot-required-detector:dev
+        - name: reboot-daemon
+          image: ghcr.io/kubereboot/reboot-daemon:dev
           imagePullPolicy: IfNotPresent
           securityContext:
             readOnlyRootFilesystem: true
@@ -86,10 +86,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-          volumeMounts:
-            - mountPath: /sentinel
-              name: sentinel
-              readOnly: true
           args:
             - --period=5s # Development value. Please increase it in production.
             - --debug # Development value. Please remove it in production.
@@ -97,16 +93,16 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: reboot-required-detector
+  name: reboot-daemon
   namespace: kube-system
   labels:
-    app.kubernetes.io/name: reboot-required-detector
+    app.kubernetes.io/name: reboot-daemon
     app.kubernetes.io/component: reporter
     app.kubernetes.io/part-of: kured
 spec:
   clusterIP: ""
   selector:
-    app.kubernetes.io/name: reboot-required-detector
+    app.kubernetes.io/name: reboot-daemon
   ports:
     - name: metrics
       port: 8080

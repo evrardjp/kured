@@ -20,7 +20,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: reboot-required-detector-binding
+  name: "kured:reboot-required-detector"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

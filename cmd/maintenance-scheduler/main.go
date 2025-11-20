@@ -30,6 +30,7 @@ func init() {
 
 func main() {
 	var (
+		// Please continue sorting alphabetically :)
 		cmNamespace string
 		cmPrefix    string
 		concurrency int
@@ -64,17 +65,22 @@ func main() {
 	cronLogger := &cli.CronSlogAdapter{Logger: logger}
 
 	client := cli.KubernetesClientSetOrDie("", kubeconfig)
-	windows, parsingError := maintenances.FetchWindows(ctx, client, cmNamespace, cmPrefix)
+
+	// Core initialisation, error 1 on failure.
+	windows, parsingError := maintenances.FetchConfigmaps(ctx, client, cmNamespace, cmPrefix)
 	if parsingError != nil {
-		slog.Error("failed to parse maintenance windows", "error", parsingError.Error())
+		slog.Error("failed to parse a maintenance window", "error", parsingError.Error())
 		os.Exit(1)
 	}
 
 	slog.Info("Starting maintenance-scheduler",
 		"version", version,
-		"debug", debug,
-		"cmPrefix", cmPrefix,
 		"period", period,
+		"metricsHost", metricsHost,
+		"metricsPort", metricsPort,
+		"debug", debug,
+		
+		"cmPrefix", cmPrefix,
 		"knownMaintenanceWindows", len(windows),
 	)
 
@@ -88,9 +94,12 @@ func main() {
 
 	// Maintenance manager setup
 	c := cronlib.New(cronlib.WithLogger(cronLogger), cronlib.WithChain(cronlib.SkipIfStillRunning(cronLogger)))
-	if err := loadAllCronJobs(c, mw, logger); err != nil {
-		slog.Error("Failed to load maintenance windows into cron", "error", err.Error())
-		os.Exit(1)
+	for _, window := range mw.AllWindows {
+		logger.Debug("Loading maintenance window into cron", "window", window.Name, "schedule", window.Schedule)
+		if _, err := c.AddFunc(window.Schedule, mw.Run(window.Name, logger)); err != nil {
+			slog.Error("Failed to load maintenance windows into cron", "error", err.Error())
+			os.Exit(1)
+		}
 	}
 	c.Start()
 
@@ -118,24 +127,4 @@ func main() {
 		slog.Error(fmt.Sprintf("unrecoverable error - failed to listen on metrics port: %v", err))
 		os.Exit(1)
 	} // #nosec G114
-}
-
-func loadAllCronJobs(c *cronlib.Cron, mw *maintenances.Windows, logger *slog.Logger) error {
-	for _, window := range mw.AllWindows {
-		logger.Debug("Loading maintenance window into cron", "window", window.Name, "schedule", window.Schedule)
-		if _, err := c.AddFunc(window.Schedule, startWindow(window.Name, mw, logger)); err != nil {
-			return fmt.Errorf("problem adding function to schedule %s: %w", window.Name, err)
-		}
-	}
-	return nil
-}
-
-func startWindow(windowName string, mw *maintenances.Windows, logger *slog.Logger) func() {
-	return func() {
-		logger.Info("Starting maintenance window", "window", windowName)
-		mw.Start(windowName)
-		time.Sleep(mw.AllWindows[windowName].Duration)
-		logger.Info("End of maintenance window", "window", windowName)
-		mw.End(windowName)
-	}
 }

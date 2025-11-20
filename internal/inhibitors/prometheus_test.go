@@ -1,15 +1,13 @@
-package blockers
+package inhibitors
 
 import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-
 	"regexp"
 	"testing"
 
-	"github.com/prometheus/client_golang/api"
-
+	papi "github.com/prometheus/client_golang/api"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -41,7 +39,16 @@ func NewMockServer(props ...MockServerProperties) *httptest.Server {
 }
 
 func TestActiveAlerts(t *testing.T) {
-	responsebody := `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"ALERTS","alertname":"GatekeeperViolations","alertstate":"firing","severity":"warning","team":"platform-infra"},"value":[1622472933.973,"1"]},{"metric":{"__name__":"ALERTS","alertname":"PodCrashing-dev","alertstate":"firing","container":"deployment","instance":"1.2.3.4:8080","job":"kube-state-metrics","namespace":"dev","pod":"dev-deployment-78dcbmf25v","severity":"critical","team":"dev"},"value":[1622472933.973,"1"]},{"metric":{"__name__":"ALERTS","alertname":"PodRestart-dev","alertstate":"firing","container":"deployment","instance":"1.2.3.4:1234","job":"kube-state-metrics","namespace":"qa","pod":"qa-job-deployment-78dcbmf25v","severity":"warning","team":"qa"},"value":[1622472933.973,"1"]},{"metric":{"__name__":"ALERTS","alertname":"PrometheusTargetDown","alertstate":"firing","job":"kubernetes-pods","severity":"warning","team":"platform-infra"},"value":[1622472933.973,"1"]},{"metric":{"__name__":"ALERTS","alertname":"ScheduledRebootFailing","alertstate":"pending","severity":"warning","team":"platform-infra"},"value":[1622472933.973,"1"]}]}}`
+	responsebody := `{"status":"success","data":{"resultType":"vector","result":[
+		{"metric":{"__name__":"ALERTS","alertname":"GatekeeperViolations","alertstate":"firing","severity":"warning","team":"platform-infra"},"value":[1622472933.973,"1"]},
+		{"metric":{"__name__":"ALERTS","alertname":"PodCrashing-dev","alertstate":"firing","container":"deployment","instance":"1.2.3.4:8080","job":"kube-state-metrics","namespace":"dev","pod":"dev-deployment-78dcbmf25v","severity":"critical","team":"dev"},"value":[1622472933.973,"1"]},
+		{"metric":{"__name__":"ALERTS","alertname":"PodRestart-dev","alertstate":"firing","container":"deployment","instance":"1.2.3.4:1234","job":"kube-state-metrics","namespace":"qa","pod":"qa-job-deployment-78dcbmf25v","severity":"warning","team":"qa"},"value":[1622472933.973,"1"]},
+		{"metric":{"__name__":"ALERTS","alertname":"PodRestart-another","alertstate":"firing","container":"deployment","instance":"1.2.3.4:1234","job":"kube-state-metrics","namespace":"qa","severity":"warning","team":"qa"},"value":[1622472933.973,"1"]},
+		{"metric":{"__name__":"ALERTS","alertname":"PodRestart-another2","alertstate":"pending","container":"deployment","instance":"1.2.3.4:1234","job":"kube-state-metrics","namespace":"qa","severity":"warning","team":"qa"},"value":[1622472933.973,"1"]},
+		{"metric":{"__name__":"ALERTS","alertname":"PrometheusTargetDown","alertstate":"firing","job":"kubernetes-pods","severity":"warning","team":"platform-infra"},"value":[1622472933.973,"1"]},
+		{"metric":{"__name__":"ALERTS","alertname":"ScheduledRebootFailing","alertstate":"pending","severity":"warning","team":"platform-infra"},"value":[1622472933.973,"1"]}
+	]}}`
+	invalidResponseBody := `{"status":"error","data":{"resultType":"vector","result":[]}}`
 	addr := "http://localhost:10001"
 
 	for _, tc := range []struct {
@@ -54,7 +61,7 @@ func TestActiveAlerts(t *testing.T) {
 		filterMatchOnly bool
 	}{
 		{
-			it:              "should return no active alerts",
+			it:              "should return no alerts",
 			respBody:        responsebody,
 			rFilter:         "",
 			wantN:           0,
@@ -62,68 +69,82 @@ func TestActiveAlerts(t *testing.T) {
 			filterMatchOnly: false,
 		},
 		{
-			it:              "should return a subset of all alerts",
+			it:              "filter everything out",
 			respBody:        responsebody,
-			rFilter:         "ScaryPod",
-			wantN:           3,
-			firingOnly:      false,
-			filterMatchOnly: false,
-		},
-		{
-			it:              "should return a subset of all alerts",
-			respBody:        responsebody,
-			rFilter:         "Gatekeeper",
-			wantN:           1,
-			firingOnly:      false,
-			filterMatchOnly: true,
-		},
-		{
-			it:              "should return all active alerts by regex",
-			respBody:        responsebody,
-			rFilter:         "*",
-			wantN:           5,
-			firingOnly:      false,
-			filterMatchOnly: false,
-		},
-		{
-			it:              "should return all active alerts by regex filter",
-			respBody:        responsebody,
-			rFilter:         "*",
-			wantN:           5,
-			firingOnly:      false,
-			filterMatchOnly: false,
-		},
-		{
-			it:              "should return only firing alerts if firingOnly is true",
-			respBody:        responsebody,
-			rFilter:         "*",
-			wantN:           4,
-			firingOnly:      true,
-			filterMatchOnly: false,
-		},
-
-		{
-			it:              "should return ScheduledRebootFailing active alerts",
-			respBody:        `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"ALERTS","alertname":"ScheduledRebootFailing","alertstate":"pending","severity":"warning","team":"platform-infra"},"value":[1622472933.973,"1"]}]}}`,
-			aName:           "ScheduledRebootFailing",
-			rFilter:         "*",
-			wantN:           1,
-			firingOnly:      false,
-			filterMatchOnly: false,
-		},
-		{
-			it:              "should not return an active alert if RebootRequired is firing (regex filter)",
-			respBody:        `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"ALERTS","alertname":"RebootRequired","alertstate":"pending","severity":"warning","team":"platform-infra"},"value":[1622472933.973,"1"]}]}}`,
-			rFilter:         "RebootRequired",
+			rFilter:         ".*",
 			wantN:           0,
 			firingOnly:      false,
 			filterMatchOnly: false,
 		},
 		{
-			it:              "should not return an active alert if RebootRequired is firing (regex filter)",
-			respBody:        `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"ALERTS","alertname":"RebootRequired","alertstate":"pending","severity":"warning","team":"platform-infra"},"value":[1622472933.973,"1"]}]}}`,
-			rFilter:         "RebootRequired",
-			wantN:           1,
+			it:              "filter everything out regardless of firing or not",
+			respBody:        responsebody,
+			rFilter:         ".*",
+			wantN:           0,
+			firingOnly:      true,
+			filterMatchOnly: false,
+		},
+		{
+			it:              "must keep everything",
+			respBody:        responsebody,
+			rFilter:         ".*",
+			wantN:           7,
+			firingOnly:      false,
+			filterMatchOnly: true,
+		},
+		{
+			it:              "must keep only firing",
+			respBody:        responsebody,
+			rFilter:         ".*",
+			wantN:           5,
+			firingOnly:      true,
+			filterMatchOnly: true,
+		},
+		{
+			it:              "everything except matching alertnames",
+			respBody:        responsebody,
+			rFilter:         "Pod",
+			wantN:           3,
+			firingOnly:      false,
+			filterMatchOnly: false,
+		},
+		{
+			it:              "all firing except matching alertnames",
+			respBody:        responsebody,
+			rFilter:         "Pod",
+			wantN:           2,
+			firingOnly:      true,
+			filterMatchOnly: false,
+		},
+		{
+			it:              "only matching alertnames regardless of firing or not",
+			respBody:        responsebody,
+			rFilter:         "Pod",
+			wantN:           4,
+			firingOnly:      false,
+			filterMatchOnly: true,
+		},
+		{
+			it:              "only matching alertnames actively firing",
+			respBody:        responsebody,
+			rFilter:         "Pod",
+			wantN:           3,
+			firingOnly:      true,
+			filterMatchOnly: true,
+		},
+		{
+			it:              "invalid response",
+			respBody:        invalidResponseBody,
+			rFilter:         ".*",
+			wantN:           0,
+			firingOnly:      false,
+			filterMatchOnly: false,
+		},
+		{
+			it:              "invalid response 2",
+			respBody:        invalidResponseBody,
+			rFilter:         ".*",
+			wantN:           0,
 			firingOnly:      false,
 			filterMatchOnly: true,
 		},
@@ -139,18 +160,16 @@ func TestActiveAlerts(t *testing.T) {
 		// Close mockServer after all connections are gone
 		defer mockServer.Close()
 
+		client, _ := papi.NewClient(papi.Config{Address: mockServer.URL})
+
 		t.Run(tc.it, func(t *testing.T) {
 
 			// regex filter
 			regex, _ := regexp.Compile(tc.rFilter)
 
 			// instantiate the prometheus client with the mockserver-address
-			p := NewPrometheusBlockingChecker(api.Config{Address: mockServer.URL}, regex, tc.firingOnly, tc.filterMatchOnly)
-
-			result, err := p.ActiveAlerts()
-			if err != nil {
-				log.Fatal(err)
-			}
+			result, _ := FindAlerts(client, regex, tc.firingOnly, tc.filterMatchOnly)
+			//fmt.Println(result)
 
 			// assert
 			assert.Equal(t, tc.wantN, len(result), "expected amount of alerts %v, got %v", tc.wantN, len(result))

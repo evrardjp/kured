@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: n-r-d
+  name: r-r-d
   namespace: kube-system
   labels:
-    app: node-reboot-detector
+    app.kubernetes.io/name: reboot-required-detector
 spec:
   type: NodePort
   selector:
-    app: node-reboot-detector
+    app.kubernetes.io/name: reboot-required-detector
   ports:
     - protocol: TCP
       port: 8080
@@ -21,15 +21,15 @@ metadata:
   name: n-m-s
   namespace: kube-system
   labels:
-    app: node-maintenance-scheduler
+    app.kubernetes.io/name: maintenance-scheduler
 spec:
   type: NodePort
   selector:
-    app: node-maintenance-scheduler
+    app.kubernetes.io/name: maintenance-scheduler
   ports:
     - protocol: TCP
       port: 8082
-      targetPort: 8082
+      targetPort: 8080
       nodePort: 30082
 ---
 apiVersion: v1
@@ -38,5 +38,5 @@ metadata:
   name: kured-maintenance-dev
   namespace: kube-system
 data:
-  startTime: "@hourly"
-  duration: "100y"
+  startTime: "@every 20s"
+  duration: "9999h"

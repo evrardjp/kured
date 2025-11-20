@@ -3,14 +3,17 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: reboot-inhibitors
-  # this needs to map where reboot-inhibitors is installed
+  # this needs to map where reboot-inhibitors deployment is installed
   namespace: kube-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: "kured:reboot-inhibitors-clusterrole"
+  name: "kured:reboot-inhibitors"
 rules:
+  - apiGroups: [ "" ]
+    resources: [ "pods" ]
+    verbs: [ "list" ]
   - apiGroups: [ "" ]
     resources: [ "nodes" ]
     verbs: [ "get", "list", "watch" ]
@@ -21,15 +24,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: reboot-inhibitors-cluster-binding
+  name: "kured:reboot-inhibitors"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: "kured:reboot-inhibitors-clusterrole"
+  name: "kured:reboot-inhibitors"
 subjects:
   - kind: ServiceAccount
     name: reboot-inhibitors
-    # this needs to map where reboot-inhibitors is installed
+    # this needs to map where reboot-inhibitors deployment is installed
     namespace: kube-system
 ---
 apiVersion: apps/v1
@@ -62,11 +65,16 @@ spec:
         - name: reboot-inhibitors
           image: ghcr.io/kubereboot/reboot-inhibitors:dev
           imagePullPolicy: IfNotPresent
-          args:
-            - "--debug"
+          securityContext:
+            readOnlyRootFilesystem: true
+          ports:
+            - containerPort: 8080
+              name: metrics
           readinessProbe:
             httpGet:
               path: /metrics
               port: 8080
             initialDelaySeconds: 1
             periodSeconds: 3
+          args:
+            - "--debug"
