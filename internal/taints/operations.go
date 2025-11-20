@@ -1,6 +1,5 @@
-// Package k8soperations provides utilities to manage Kubernetes node taints for controlling
-// pod scheduling and execution, drains, and other practical k8s calls.
-package k8soperations
+// Package taints provides utilities to manage Kubernetes node taints
+package taints
 
 import (
 	"context"
@@ -9,7 +8,7 @@ import (
 	"log/slog"
 	"os"
 
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -20,12 +19,12 @@ type Taint struct {
 	client    *kubernetes.Clientset
 	nodeID    string
 	taintName string
-	effect    v1.TaintEffect
+	effect    corev1.TaintEffect
 	exists    bool
 }
 
-// NewTaint provides a new taint.
-func NewTaint(client *kubernetes.Clientset, nodeID, taintName string, effect v1.TaintEffect) *Taint {
+// New provides a new taint
+func New(client *kubernetes.Clientset, nodeID, taintName string, effect corev1.TaintEffect) *Taint {
 	exists, _, _ := taintExists(client, nodeID, taintName)
 
 	return &Taint{
@@ -34,6 +33,14 @@ func NewTaint(client *kubernetes.Clientset, nodeID, taintName string, effect v1.
 		taintName: taintName,
 		effect:    effect,
 		exists:    exists,
+	}
+}
+
+func (t *Taint) SetState(enabled bool) {
+	if enabled {
+		t.Enable()
+	} else {
+		t.Disable()
 	}
 }
 
@@ -67,7 +74,7 @@ func (t *Taint) Disable() {
 	t.exists = false
 }
 
-func taintExists(client *kubernetes.Clientset, nodeID, taintName string) (bool, int, *v1.Node) {
+func taintExists(client *kubernetes.Clientset, nodeID, taintName string) (bool, int, *corev1.Node) {
 	updatedNode, err := client.CoreV1().Nodes().Get(context.TODO(), nodeID, metav1.GetOptions{})
 	if err != nil || updatedNode == nil {
 		slog.Debug("Error reading node from API server", "node", nodeID, "error", err)
@@ -84,7 +91,7 @@ func taintExists(client *kubernetes.Clientset, nodeID, taintName string) (bool, 
 	return false, 0, updatedNode
 }
 
-func preferNoSchedule(client *kubernetes.Clientset, nodeID, taintName string, effect v1.TaintEffect, shouldExists bool) {
+func preferNoSchedule(client *kubernetes.Clientset, nodeID, taintName string, effect corev1.TaintEffect, shouldExists bool) {
 	taintExists, offset, updatedNode := taintExists(client, nodeID, taintName)
 
 	if taintExists && shouldExists {
@@ -103,7 +110,7 @@ func preferNoSchedule(client *kubernetes.Clientset, nodeID, taintName string, ef
 		Value interface{} `json:"value,omitempty"`
 	}
 
-	taint := v1.Taint{
+	taint := corev1.Taint{
 		Key:    taintName,
 		Effect: effect,
 	}
@@ -121,7 +128,7 @@ func preferNoSchedule(client *kubernetes.Clientset, nodeID, taintName string, ef
 			{
 				Op:    "add",
 				Path:  "/spec/taints",
-				Value: []v1.Taint{},
+				Value: []corev1.Taint{},
 			},
 			{
 				Op:    "add",

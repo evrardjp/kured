@@ -64,7 +64,7 @@ func TestActiveAlerts(t *testing.T) {
 		{
 			it:              "should return a subset of all alerts",
 			respBody:        responsebody,
-			rFilter:         "Pod",
+			rFilter:         "ScaryPod",
 			wantN:           3,
 			firingOnly:      false,
 			filterMatchOnly: false,

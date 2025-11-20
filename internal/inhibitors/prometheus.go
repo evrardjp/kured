@@ -7,15 +7,16 @@ import (
 	"sort"
 	"time"
 
+	"log/slog"
+
 	papi "github.com/prometheus/client_golang/api"
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
-	"log/slog"
 )
 
 // Compile-time checks to ensure the type implements the interface
 var (
-	_ RebootBlocker = (*PrometheusBlockingChecker)(nil)
+	_ RebootInhibitor = (*PrometheusBlockingChecker)(nil)
 )
 
 // PrometheusBlockingChecker contains info for connecting
