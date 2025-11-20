@@ -11,7 +11,7 @@ import (
 // This is useful for some of the components who do not add kubernetes as a dependency, making the image smaller.
 
 var onlyOneSignalHandler = make(chan struct{})
-var shutdownSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
+var shutdownSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT}
 
 // SetupSignalHandler registered for SIGTERM and SIGINT. A context is returned
 // which is cancelled on one of these signals. If a second signal is caught,

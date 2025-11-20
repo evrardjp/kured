@@ -25,14 +25,16 @@ kured-release-snapshot:
 	goreleaser release --clean --snapshot
 
 image: kured
-	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/kured:$(VERSION) --build-arg BINARY=kured .
-	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/reboot-required-detector:$(VERSION) --build-arg BINARY=reboot-required-detector .
 	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/maintenance-scheduler:$(VERSION) --build-arg BINARY=maintenance-scheduler .
+	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/reboot-daemon:$(VERSION) --build-arg BINARY=reboot-daemon .
+	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/reboot-inhibitors:$(VERSION) --build-arg BINARY=reboot-inhibitors .
+	$(SUDO) docker buildx build --no-cache --load -t ghcr.io/$(DH_ORG)/reboot-required-detector:$(VERSION) --build-arg BINARY=reboot-required-detector .
 
 dev-image: image
-	$(SUDO) docker tag ghcr.io/$(DH_ORG)/kured:$(VERSION) ghcr.io/kubereboot/kured:dev
-	$(SUDO) docker tag ghcr.io/$(DH_ORG)/reboot-required-detector:$(VERSION) ghcr.io/kubereboot/reboot-required-detector:dev
 	$(SUDO) docker tag ghcr.io/$(DH_ORG)/maintenance-scheduler:$(VERSION) ghcr.io/kubereboot/maintenance-scheduler:dev
+	$(SUDO) docker tag ghcr.io/$(DH_ORG)/reboot-daemon:$(VERSION) ghcr.io/kubereboot/reboot-daemon:dev
+	$(SUDO) docker tag ghcr.io/$(DH_ORG)/reboot-inhibitors:$(VERSION) ghcr.io/kubereboot/reboot-inhibitors:dev
+	$(SUDO) docker tag ghcr.io/$(DH_ORG)/reboot-required-detector:$(VERSION) ghcr.io/kubereboot/reboot-required-detector:dev
 
 e2e-test: dev-image
 	echo "Running ALL go tests"

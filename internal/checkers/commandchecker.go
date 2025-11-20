@@ -3,11 +3,12 @@ package checkers
 import (
 	"bytes"
 	"fmt"
-	"github.com/google/shlex"
 	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/google/shlex"
 )
 
 // CommandChecker is using a custom command to check

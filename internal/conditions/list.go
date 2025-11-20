@@ -15,7 +15,7 @@ func ListAllNodesWithConditionType(ctx context.Context, clientSet *kubernetes.Cl
 		return nil, fmt.Errorf("failed to list nodes: %w", err)
 	}
 
-	// Find nodes that match criteria
+	// Find nodes that match all criteria
 	var matchingNodes []string
 	for _, node := range allNodes.Items {
 		if hasCondition, _ := Matches(node.Status.Conditions, []string{conditionType}, []string{}); hasCondition {
