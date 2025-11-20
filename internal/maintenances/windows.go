@@ -1,19 +1,13 @@
 package maintenances
 
 import (
-	"context"
-	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	cronlib "github.com/robfig/cron/v3"
-	"gopkg.in/yaml.v3"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/kubernetes"
 )
 
 var (
@@ -29,64 +23,6 @@ type Window struct {
 	Duration     time.Duration
 	NodeSelector labels.Selector
 	Schedule     string
-}
-
-// FetchWindows loads maintenance windows from the given namespace, using the given prefix.
-func FetchWindows(ctx context.Context, client *kubernetes.Clientset, namespace, prefix string) ([]*Window, error) {
-	cms, err := client.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	var res []*Window
-	for _, cm := range cms.Items {
-		if !strings.HasPrefix(cm.Name, prefix) {
-			continue
-		}
-		d := cm.Data
-		window, err := parseMaintenanceConfigMap(cm.Name, d)
-		if err != nil {
-			return nil, err
-		}
-		slog.Debug("maintenance window details", "window", window.Name, "schedule", window.Schedule, "duration", window.Duration.String(), "nodeSelector", window.NodeSelector.String())
-		res = append(res, window)
-	}
-	if len(res) == 0 {
-		return nil, fmt.Errorf("no windows found")
-	}
-	return res, nil
-}
-
-func parseMaintenanceConfigMap(name string, d map[string]string) (*Window, error) {
-	if _, errCronParsing := cronlib.ParseStandard(d["startTime"]); errCronParsing != nil {
-		return nil, errCronParsing
-	}
-	duration, errConv := time.ParseDuration(d["duration"])
-	if errConv != nil {
-		return nil, errConv
-	}
-	var selector labels.Selector
-	if nsRaw, ok := d["nodeSelector"]; ok && nsRaw != "" {
-		// First, unmarshal YAML or JSON
-		var ls metav1.LabelSelector
-		if err := yaml.Unmarshal([]byte(nsRaw), &ls); err != nil {
-			return nil, err
-		}
-
-		// Convert LabelSelector -> labels.Selector
-		var errLS error
-		selector, errLS = metav1.LabelSelectorAsSelector(&ls)
-		if errLS != nil {
-			return nil, errLS
-		}
-	} else {
-		selector = labels.Everything()
-	}
-	return &Window{
-		Name:         name,
-		Duration:     duration,
-		NodeSelector: selector,
-		Schedule:     d["startTime"],
-	}, nil
 }
 
 // Windows keeps track of active maintenance windows and their node selectors.
@@ -155,4 +91,14 @@ func (a *Windows) ListSelectors() string {
 		activeSelectors = append(activeSelectors, selector.String())
 	}
 	return strings.Join(activeSelectors, " | ")
+}
+
+func (a *Windows) Run(windowName string, logger *slog.Logger) func() {
+	return func() {
+		logger.Info("Starting maintenance window", "window", windowName)
+		a.Start(windowName)
+		time.Sleep(a.AllWindows[windowName].Duration)
+		logger.Info("End of maintenance window", "window", windowName)
+		a.End(windowName)
+	}
 }
