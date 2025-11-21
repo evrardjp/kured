@@ -14,13 +14,22 @@ rules:
   # Allow kubectl to drain/uncordon
   - apiGroups: [""]
     resources: ["nodes"]
-    verbs:     ["get", "patch", "list", "watch"]
+    verbs:     ["get",  "update", "patch", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs:     ["list","delete","get"]
   - apiGroups: [""]
     resources: ["pods/eviction"]
     verbs:     ["create"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get", "list", "update"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["list"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -63,13 +72,19 @@ spec:
           effect: NoSchedule
         - key: node-role.kubernetes.io/master
           effect: NoSchedule
+      hostPID: true
       restartPolicy: Always
       containers:
         - name: reboot-daemon
           image: ghcr.io/kubereboot/reboot-daemon:dev
           imagePullPolicy: IfNotPresent
           securityContext:
+            privileged: false # Give permission to nsenter /proc/1/ns/mnt
             readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ "*" ]
+              add: [ "CAP_KILL" ]
           ports:
             - containerPort: 8080
               name: metrics
@@ -87,7 +102,6 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
           args:
-            - --period=5s # Development value. Please increase it in production.
             - --debug # Development value. Please remove it in production.
 ---
 apiVersion: v1
