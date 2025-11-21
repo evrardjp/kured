@@ -103,7 +103,7 @@ func main() {
 	flag.IntVar(&drainSkipWaitForDeleteTimeoutSeconds, "drain-skip-wait-for-delete-timeout", 0, "when seconds is greater than zero, skip waiting for the pods whose deletion timestamp is older than N seconds while draining a node")
 	flag.DurationVar(&drainTimeout, "drain-timeout", 0, "timeout after which the drain is aborted (default: 0, infinite time)")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional kubeconfig")
-	flag.StringVar(&logFormat, "log-format", "text", "use text or json log format")
+	flag.StringVar(&logFormat, "log-format", "json", "use text or json log format")
 	flag.StringVar(&nodeID, "node-id", "", "node name on which this controller runs, should be passed down from spec.nodeName via KURED_NODE_ID environment variable")
 	flag.DurationVar(&period, "period", time.Minute, "period is the controller resync period to ensure the node conditions are correctly read and a reboot is triggered")
 	flag.StringVar(&preferNoScheduleTaintName, "prefer-no-schedule-taint", "", "Taint name applied during pending node reboot (to prevent receiving additional pods from other rebooting nodes). Disabled by default. Set e.g. to \"kured.dev/kured-node-reboot\" to enable tainting.")
@@ -191,6 +191,8 @@ func main() {
 		DeleteEmptyDirData:              true,
 		PodSelector:                     drainPodSelector,
 		SkipWaitForDeleteTimeoutSeconds: drainSkipWaitForDeleteTimeoutSeconds,
+		Out:                             os.Stdout,
+		ErrOut:                          os.Stderr,
 	}
 
 	preferNoScheduleTaint := taints.New(client, nodeID, preferNoScheduleTaintName, corev1.TaintEffectPreferNoSchedule)

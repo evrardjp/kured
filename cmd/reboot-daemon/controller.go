@@ -234,9 +234,11 @@ func (c *Controller) rebootAsRequired(ctx context.Context, objectRef cache.Objec
 		return nil
 	}
 	rebootDesired := inProgressCondition.Status == corev1.ConditionTrue
-	c.logger.Debug("node condition info", "node", node.Name, "conditionStatus", rebootDesired, "lastHeartbeatTime", inProgressCondition.LastHeartbeatTime.Time)
+	c.logger.Debug("node condition info", "node", node.Name, "conditionType", conditions.InProgressMaintenanceConditionType, "conditionStatus", rebootDesired, "lastHeartbeatTime", inProgressCondition.LastHeartbeatTime.Time)
 
 	clientSet := c.client.(*kubernetes.Clientset)
+
+	c.logger.Info("Handling preferNoSchedule taint (if requested)", "node", c.nodeName, "desiredTaintState", map[bool]string{true: "present", false: "absent"}[rebootDesired])
 	// Apply/Remove a taint as soon as we enter/leave maintenance
 	c.preferNoScheduleTaint.SetState(rebootDesired)
 
@@ -248,12 +250,12 @@ func (c *Controller) rebootAsRequired(ctx context.Context, objectRef cache.Objec
 	// In both cases, there is 0 reason to do it here, as it can be done in a different channel.
 
 	// Apply/Remove annotation before we Evict/after we return the node as active (removed the taint)
-	// Let's assume that nodes are Schedulable by default.
-	previouslyUnschedulable := false
+	previouslyUnschedulable := node.Spec.Unschedulable
 	if previouslyUnschedulableAnnotation, ok := node.Annotations[labels.KuredNodeWasUnschedulableBeforeDrainAnnotation]; !ok {
 		// No annotation might be fine. Do we need to reboot? Then we need to save Unschedulable spec in annotation.
 		if rebootDesired {
 			annotations := map[string]string{labels.KuredNodeWasUnschedulableBeforeDrainAnnotation: strconv.FormatBool(node.Spec.Unschedulable)}
+			c.logger.Info(fmt.Sprintf("adding annotation %s", labels.KuredNodeWasUnschedulableBeforeDrainAnnotation), "node", c.nodeName)
 			err := labels.AddNodeAnnotations(clientSet, c.nodeName, annotations)
 			if err != nil {
 				return fmt.Errorf("error saving state of the node %s, %v", c.nodeName, err)
@@ -278,18 +280,22 @@ func (c *Controller) rebootAsRequired(ctx context.Context, objectRef cache.Objec
 	}
 
 	if rebootDesired {
-		if err := kubectldrain.RunNodeDrain(c.drainHelper, c.nodeName); err != nil {
-			return fmt.Errorf("error draining node %s: %v", c.nodeName, err)
+		c.logger.Info("Draining node", "node", c.nodeName)
+		if errDrain := kubectldrain.RunNodeDrain(c.drainHelper, c.nodeName); errDrain != nil {
+			return fmt.Errorf("error draining node %s: %v", c.nodeName, errDrain)
 		}
 	} else {
+		c.logger.Info("Ensuring absent maintenance annotation", "node", c.nodeName)
 		if errDelAnnotation := labels.DeleteNodeAnnotation(clientSet, c.nodeName, labels.KuredNodeWasUnschedulableBeforeDrainAnnotation); errDelAnnotation != nil {
 			return fmt.Errorf("error cleaning annotation containing previous Unschedulable state of the node %s, %v", c.nodeName, errDelAnnotation)
 		}
 	}
 
-	if errR := c.rebooter.Reboot(); errR != nil {
-		return fmt.Errorf("error rebooting node %s: %w", c.nodeName, errR)
+	if rebootDesired {
+		c.logger.Info("Rebooting node", "node", c.nodeName)
+		if errR := c.rebooter.Reboot(); errR != nil {
+			return fmt.Errorf("error rebooting node %s: %w", c.nodeName, errR)
+		}
 	}
-
 	return nil
 }

@@ -33,7 +33,6 @@ func AddNodeAnnotations(client *kubernetes.Clientset, nodeID string, annotations
 	}
 	for k, v := range annotations {
 		node.Annotations[k] = v
-		slog.Debug(fmt.Sprintf("adding node annotation: %s=%s", k, v), "node", node.GetName())
 	}
 
 	bytes, err := json.Marshal(node)
@@ -60,12 +59,22 @@ func AddNodeAnnotations(client *kubernetes.Clientset, nodeID string, annotations
 //
 // Returns an error if the operation fails, nil otherwise
 func DeleteNodeAnnotation(client *kubernetes.Clientset, nodeID, key string) error {
+	node, err := client.CoreV1().Nodes().Get(context.TODO(), nodeID, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("error getting node %s: %v", nodeID, err)
+	}
+
+	// Check if the annotation exists
+	if _, exists := node.Annotations[key]; !exists {
+		// Annotation doesn't exist, so we're done
+		return nil
+	}
 	// JSON Patch takes as path input a JSON Pointer, defined in RFC6901
 	// So we replace all instances of "/" with "~1" as per:
 	// https://tools.ietf.org/html/rfc6901#section-3
 	patch := []byte(fmt.Sprintf("[{\"op\":\"remove\",\"path\":\"/metadata/annotations/%s\"}]", strings.ReplaceAll(key, "/", "~1")))
-	_, err := client.CoreV1().Nodes().Patch(context.TODO(), nodeID, types.JSONPatchType, patch, metav1.PatchOptions{})
-	if err != nil {
+	_, errPatch := client.CoreV1().Nodes().Patch(context.TODO(), nodeID, types.JSONPatchType, patch, metav1.PatchOptions{})
+	if errPatch != nil {
 		return fmt.Errorf("error deleting node annotation %s via k8s API: %v", key, err)
 	}
 	return nil
