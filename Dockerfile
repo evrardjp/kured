@@ -1,4 +1,4 @@
-FROM alpine:3.22.2@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412 AS bin
+FROM alpine:3.22.2@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412 AS base
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -20,6 +20,10 @@ RUN set -ex \
     esac \
   && cp /dist/${BINARY}_${TARGETOS}_${TARGETARCH}${SUFFIX}/${BINARY} /dist/entrypoint;
 
-FROM cgr.dev/chainguard/go AS final
-COPY --from=bin /dist/entrypoint /usr/bin/entrypoint
+FROM scratch AS final
+#COPY --from=base /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=base /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=base /etc/passwd /etc/passwd
+COPY --from=base /etc/group /etc/group
+COPY --from=base /dist/entrypoint /usr/bin/entrypoint
 ENTRYPOINT ["/usr/bin/entrypoint"]
