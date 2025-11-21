@@ -20,10 +20,6 @@ RUN set -ex \
     esac \
   && cp /dist/${BINARY}_${TARGETOS}_${TARGETARCH}${SUFFIX}/${BINARY} /dist/entrypoint;
 
-FROM scratch AS final
-#COPY --from=base /usr/share/zoneinfo /usr/share/zoneinfo
-COPY --from=base /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=base /etc/passwd /etc/passwd
-COPY --from=base /etc/group /etc/group
+FROM gcr.io/distroless/static-debian12
 COPY --from=base /dist/entrypoint /usr/bin/entrypoint
 ENTRYPOINT ["/usr/bin/entrypoint"]
