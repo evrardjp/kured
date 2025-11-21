@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-#kind create cluster --config local-kind.yaml
+kind create cluster --config tests/local/local-kind.yaml
 kubectl apply -f maintenance-scheduler.yaml
 kubectl apply -f reboot-daemon.yaml
 kubectl apply -f reboot-inhibitors.yaml
