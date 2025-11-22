@@ -231,7 +231,7 @@ func (c *Controller) applyInMaintenanceCondition(ctx context.Context, objectRef 
 
 	// Second reason to put a false condition: Too many nodes have the condition, cannot add a new one
 	nodes, errListing := conditions.ListAllNodesWithConditionType(ctx, clientSet, conditions.InProgressMaintenanceConditionType)
-	c.logger.Debug(fmt.Sprintf("nodes currently in maintenance: %s", nodes))
+	c.logger.Debug("nodes currently in maintenance", "count", len(nodes), "names", nodes)
 	if errListing != nil {
 		return fmt.Errorf("failed to list all nodes: %w", err)
 	}
