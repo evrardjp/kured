@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -58,8 +57,7 @@ func main() {
 	cli.LoadFromEnv()
 
 	// set up signals so we handle the shutdown signal gracefully
-	customCtx, customCancel := context.WithCancel(context.Background())
-	ctx := cli.SetupSignalHandler(customCtx)
+	ctx := cli.SetupSignalHandler()
 
 	logger := cli.NewLogger(debug, logFormat)
 	// For all the old calls using logger
@@ -81,7 +79,7 @@ func main() {
 		"metricsHost", metricsHost,
 		"metricsPort", metricsPort,
 		"debug", debug,
-
+		
 		"cmPrefix", cmPrefix,
 		"knownMaintenanceWindows", len(windows),
 	)
@@ -103,7 +101,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	//c.Start()
+	c.Start()
 
 	// Controller handling node events to guarantee the placement of nodes into maintenance if they belong to an active window
 	kubeInformerFactory := informers.NewSharedInformerFactory(client, period)
@@ -114,43 +112,13 @@ func main() {
 		period,
 	)
 
+	// The Start method is non-blocking and runs all registered informers in a dedicated goroutine.
 	kubeInformerFactory.Start(ctx.Done())
 
-	// The Start method is non-blocking and runs all registered informers in a dedicated goroutine.
 	go func() {
 		if err := controller.Run(ctx, 2); err != nil {
 			os.Exit(1)
 		}
-	}()
-	go func() {
-		time.Sleep(10 * time.Second)
-		slog.Debug("stopping")
-		customCancel()
-		kubeInformerFactory.Shutdown()
-		slog.Debug("stopped")
-
-	}()
-	go func() {
-		time.Sleep(25 * time.Second)
-		slog.Debug("Restarting")
-		kubeInformerFactory.Start(ctx.Done())
-		slog.Debug("Rerunning controller")
-
-		if err := controller.Run(ctx, 2); err != nil {
-			os.Exit(1)
-		}
-		slog.Debug("started controller")
-
-	}()
-
-	go func() {
-		time.Sleep(40 * time.Second)
-		slog.Debug("stopping again")
-
-		customCancel()
-		kubeInformerFactory.Shutdown()
-		slog.Debug("stopped")
-
 	}()
 
 	// Closes on Ctrl-C
