@@ -2,6 +2,7 @@ package maintenances
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,18 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 )
+
+type Window struct {
+	Name         string
+	Duration     time.Duration
+	NodeSelector labels.Selector
+	Schedule     string
+}
+
+func (w *Window) Checksum() [16]byte {
+	data := strings.Join([]string{w.Duration.String(), w.NodeSelector.String(), w.Schedule}, "|")
+	return md5.Sum([]byte(data))
+}
 
 func NewWindowFromConfigMap(name string, d map[string]string) (*Window, error) {
 	if _, errCronParsing := cron.ParseStandard(d["startTime"]); errCronParsing != nil {

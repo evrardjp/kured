@@ -1,6 +1,8 @@
 package conditions
 
-import corev1 "k8s.io/api/core/v1"
+import (
+	corev1 "k8s.io/api/core/v1"
+)
 
 // Matches checks if node conditions meets the criteria defined by positive and negative conditions.
 // It returns a tuple with:

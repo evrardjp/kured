@@ -82,7 +82,7 @@ func NewController(logger *slog.Logger, client kubernetes.Interface, nodeInforme
 			if newNode.ObjectMeta.Name != nodeName {
 				return
 			}
-			inProgressCondition := conditions.GetNodeCondition(newNode.Status.Conditions, conditions.InProgressMaintenanceConditionType)
+			inProgressCondition := conditions.GetNodeCondition(newNode.Status.Conditions, conditions.MaintenanceInProgressConditionType)
 			if inProgressCondition == nil {
 				c.logger.Debug("not queuing node object (missing condition)")
 				return
@@ -98,8 +98,8 @@ func NewController(logger *slog.Logger, client kubernetes.Interface, nodeInforme
 			if newNode.ObjectMeta.Name != nodeName {
 				return
 			}
-			oldNodeInProgressCondition := conditions.GetNodeCondition(oldNode.Status.Conditions, conditions.InProgressMaintenanceConditionType)
-			newNodeInProgressCondition := conditions.GetNodeCondition(newNode.Status.Conditions, conditions.InProgressMaintenanceConditionType)
+			oldNodeInProgressCondition := conditions.GetNodeCondition(oldNode.Status.Conditions, conditions.MaintenanceInProgressConditionType)
+			newNodeInProgressCondition := conditions.GetNodeCondition(newNode.Status.Conditions, conditions.MaintenanceInProgressConditionType)
 
 			if newNodeInProgressCondition == nil {
 				c.logger.Debug("not queuing node object (missing condition)")
@@ -129,8 +129,8 @@ func NewController(logger *slog.Logger, client kubernetes.Interface, nodeInforme
 			//if newNode.ObjectMeta.Name != nodeName {
 			//	return
 			//}
-			//oldNodeInProgressCondition := conditions.GetNodeCondition(oldNode.Status.Conditions, conditions.InProgressMaintenanceConditionType)
-			//newNodeInProgressCondition := conditions.GetNodeCondition(newNode.Status.Conditions, conditions.InProgressMaintenanceConditionType)
+			//oldNodeInProgressCondition := conditions.GetNodeCondition(oldNode.Status.Conditions, conditions.MaintenanceInProgressConditionType)
+			//newNodeInProgressCondition := conditions.GetNodeCondition(newNode.Status.Conditions, conditions.MaintenanceInProgressConditionType)
 			//if oldNodeInProgressCondition == nil || newNodeInProgressCondition == nil {
 			//	c.logger.Debug("not queuing node object (missing condition)")
 			//	return
@@ -228,13 +228,13 @@ func (c *Controller) rebootAsRequired(ctx context.Context, objectRef cache.Objec
 		return fmt.Errorf("failed to get object %s from nodeLister", objectRef.Name)
 	}
 
-	inProgressCondition := conditions.GetNodeCondition(node.Status.Conditions, conditions.InProgressMaintenanceConditionType)
+	inProgressCondition := conditions.GetNodeCondition(node.Status.Conditions, conditions.MaintenanceInProgressConditionType)
 	if inProgressCondition == nil {
 		c.logger.Debug("required condition is absent on the node %s", objectRef.Name)
 		return nil
 	}
 	rebootDesired := inProgressCondition.Status == corev1.ConditionTrue
-	c.logger.Debug("node condition info", "node", node.Name, "conditionType", conditions.InProgressMaintenanceConditionType, "conditionStatus", rebootDesired, "lastHeartbeatTime", inProgressCondition.LastHeartbeatTime.Time)
+	c.logger.Debug("node condition info", "node", node.Name, "conditionType", conditions.MaintenanceInProgressConditionType, "conditionStatus", rebootDesired, "lastHeartbeatTime", inProgressCondition.LastHeartbeatTime.Time)
 
 	clientSet := c.client.(*kubernetes.Clientset)
 
