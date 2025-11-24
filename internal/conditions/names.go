@@ -9,16 +9,17 @@ const (
 )
 const (
 	// UnderMaintenanceConditionType is set by maintenance-scheduler when a node matches an active maintenance window, but not necessarily undergoing maintenance yet.
-	UnderMaintenanceConditionType   = "kured.dev/under-maintenance-window"
-	UnderMaintenanceConditionReason = "KuredFoundMatchingMaintenanceWindowConfigmap"
+	UnderMaintenanceConditionType     = "kured.dev/under-maintenance-window"
+	UnderMaintenanceConditionReason   = "KuredFoundMatchingMaintenanceWindowConfigmap"
+	UnderNoMaintenanceConditionReason = "KuredFoundNoMatchingMaintenanceWindowConfigmap"
 )
 
 const (
-	// InProgressMaintenanceConditionType is set by maintenance-scheduler when a node is undergoing maintenance (e.g., being rebooted).
-	InProgressMaintenanceConditionType                            = "kured.dev/maintenance-in-progress"
-	InProgressMaintenanceConditionSuccessReason                   = "KuredStartedMaintenance"
-	InProgressMaintenanceConditionBadConditionsReason             = "KuredPrerequisitesConditionsUnmet"
-	InProgressMaintenanceConditionTooManyNodesInMaintenanceReason = "KuredTooManyNodesCurrentlyInMaintenance"
+	// MaintenanceInProgressConditionType is set by maintenance-scheduler when a node is undergoing maintenance (e.g., being rebooted).
+	MaintenanceInProgressConditionType                            = "kured.dev/maintenance-in-progress"
+	MaintenanceInProgressConditionSuccessReason                   = "KuredStartedMaintenance"
+	MaintenanceInProgressConditionBadConditionsReason             = "KuredPrerequisitesConditionsUnmet"
+	MaintenanceInProgressConditionTooManyNodesInMaintenanceReason = "KuredTooManyNodesCurrentlyInMaintenance"
 )
 
 const (

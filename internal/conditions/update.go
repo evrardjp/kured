@@ -6,13 +6,38 @@ import (
 	"fmt"
 	"time"
 
-	"k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 )
 
-func UpdateNodeCondition(ctx context.Context, clientset *kubernetes.Clientset, nodeName string, condition v1.NodeCondition, conditionHeartbeatPeriod time.Duration) error {
+// UpsertNodeCondition mutates node and returns true if an update is required
+func UpsertNodeCondition(node *corev1.Node, condition corev1.NodeCondition, conditionHeartbeatPeriod time.Duration) bool {
+	for i, c := range node.Status.Conditions {
+		if c.Type == condition.Type {
+			// "i" contains the index of the correct condition to update (or not)
+			// now evaluating if I can skip replacing
+			if c.Status == condition.Status && metav1.Now().Sub(c.LastHeartbeatTime.Time) <= conditionHeartbeatPeriod {
+				return false
+			}
+			// now evaluating whether to keep lastTransition time or not
+			if c.Status == condition.Status {
+				condition.LastTransitionTime = c.LastTransitionTime
+			}
+			// now evaluating to update heartbeat time or not
+			if metav1.Now().Sub(c.LastHeartbeatTime.Time) <= conditionHeartbeatPeriod {
+				condition.LastHeartbeatTime = c.LastHeartbeatTime
+			}
+			node.Status.Conditions[i] = condition
+			return true
+		}
+	}
+	node.Status.Conditions = append(node.Status.Conditions, condition)
+	return true
+}
+
+func UpdateNodeCondition(ctx context.Context, clientset *kubernetes.Clientset, nodeName string, condition corev1.NodeCondition, conditionHeartbeatPeriod time.Duration) error {
 	node, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -61,15 +86,4 @@ func UpdateNodeCondition(ctx context.Context, clientset *kubernetes.Clientset, n
 		return fmt.Errorf("failed to update node status: %w", err)
 	}
 	return nil
-}
-
-func BoolToConditionStatus(b bool) v1.ConditionStatus {
-	if b {
-		return v1.ConditionTrue
-	}
-	return v1.ConditionFalse
-}
-
-func StringToConditionType(s string) v1.NodeConditionType {
-	return v1.NodeConditionType(s)
 }

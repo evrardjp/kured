@@ -9,13 +9,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-type Window struct {
-	Name         string
-	Duration     time.Duration
-	NodeSelector labels.Selector
-	Schedule     string
-}
-
 // Windows keeps track of active maintenance windows and their node selectors.
 // We do not need to store the maintenance windows directly here, only their selectors for quick lookup.
 type Windows struct {
@@ -25,16 +18,22 @@ type Windows struct {
 	AllWindows map[string]*Window
 }
 
-func NewWindows(windows []*Window) *Windows {
+func NewWindows(windows ...*Window) *Windows {
 	w := &Windows{
 		activeSelectors: map[string]labels.Selector{},
 		mu:              &sync.Mutex{},
 		AllWindows:      map[string]*Window{},
 	}
 	for _, window := range windows {
-		w.AllWindows[window.Name] = window
+		w.Add(window)
 	}
 	return w
+}
+
+func (a *Windows) Add(window *Window) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.AllWindows[window.Name] = window
 }
 
 // Start activates the maintenance window with the given name and node selector.
@@ -42,7 +41,7 @@ func (a *Windows) Start(windowName string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.activeSelectors[windowName] = a.AllWindows[windowName].NodeSelector
-	ActiveMaintenanceWindowGauge.WithLabelValues(windowName).Set(1)
+	ActiveWindowsGauge.WithLabelValues(windowName).Set(1)
 }
 
 // End deactivates the maintenance window with the given name.
@@ -50,7 +49,7 @@ func (a *Windows) End(windowName string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.activeSelectors, windowName)
-	ActiveMaintenanceWindowGauge.WithLabelValues(windowName).Set(0)
+	ActiveWindowsGauge.WithLabelValues(windowName).Set(0)
 }
 
 func (a *Windows) MatchesAnyActiveSelector(nodeLabels map[string]string) (bool, string) {

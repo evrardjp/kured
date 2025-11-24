@@ -10,12 +10,18 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/kubereboot/kured/internal/cli"
+	"github.com/kubereboot/kured/internal/conditions"
 	"github.com/kubereboot/kured/internal/controllers"
+	"github.com/kubereboot/kured/internal/maintenances"
+	"github.com/robfig/cron/v3"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
@@ -27,12 +33,14 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	//prometheus.MustRegister(maintenances.ActiveMaintenanceWindowGauge)
+	metrics.Registry.Register(maintenances.ActiveWindowsGauge)
+	metrics.Registry.Register(maintenances.NodesInProgressGauge)
 }
 
 func main() {
 	var (
 		// Please continue sorting alphabetically :)
+		cmLabelKey  string
 		cmNamespace string
 		cmPrefix    string
 		concurrency int
@@ -45,6 +53,7 @@ func main() {
 		period           time.Duration
 		probeBindAddress string
 	)
+	flag.StringVar(&cmLabelKey, "cm-label-key", "kured.dev/maintenance", "Label key to identify maintenance configmaps")
 	flag.StringVar(&cmNamespace, "cm-namespace", "kube-system", "Namespace where maintenance configmaps live")
 	flag.StringVar(&cmPrefix, "config-prefix", "kured-maintenance-", "maintenance configmap prefix")
 	flag.IntVar(&concurrency, "concurrency", 1, "Number of concurrent nodes actively in maintenance")
@@ -54,7 +63,7 @@ func main() {
 	flag.StringVar(&metricsHost, "metrics-host", "", "host where metrics will listen")
 	flag.IntVar(&metricsPort, "metrics-port", 8080, "port number where metrics will listen")
 	flag.StringVar(&namespace, "leader-election-namespace", "kube-system", "Namespace for leader election lock")
-	flag.DurationVar(&period, "period", time.Minute, "controller resync and maintenance assigner period")
+	flag.DurationVar(&period, "period", time.Minute, "controller resync and maintenance assigner heartbeat period")
 	flag.StringVar(&probeBindAddress, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 
 	flag.Parse()
@@ -63,22 +72,64 @@ func main() {
 	cli.LoadFromEnv()
 
 	// set up signals so we handle the shutdown signal gracefully
-	//ctx := ctrl.SetupSignalHandler()
+	ctx := ctrl.SetupSignalHandler()
 
+	// Setup all loggers
 	logger := cli.NewLogger(debug, logFormat)
-	// For all the old calls using logger
-	slog.SetDefault(logger)
-	// Adapters for slog
-	//cronLogger := &cli.CronSlogAdapter{Logger: logger}
-	ctrl.SetLogger(logr.FromSlogHandler(logger.Handler()))
-	setupLog := ctrl.Log.WithName(binaryName)
 
-	//scheme := runtime.NewScheme()
-	//_ = corev1.AddToScheme(scheme)
+	slog.SetDefault(logger)                                // for generic log.logger
+	cronLogger := &cli.CronSlogAdapter{Logger: logger}     // for robfig cron's logger
+	ctrl.SetLogger(logr.FromSlogHandler(logger.Handler())) // for controller-runtime's logger
+	setupLog := ctrl.Log.WithName(binaryName)              // for controller-runtime logger
+	klog.SetLogger(logr.FromSlogHandler(logger.Handler())) // for client-go's tool loggers (appears in leader election)
+
+	// At all times all the pods of this controller need to know the maintenance windows,
+	// so that they can take over gracefully in case of leader election.
+	config := ctrl.GetConfigOrDie()
+	client := kubernetes.NewForConfigOrDie(config)
+
+	windows, parsingError := maintenances.FetchConfigmaps(ctx, client, cmNamespace, cmPrefix)
+	if parsingError != nil {
+		slog.Error("failed to parse a maintenance window", "error", parsingError.Error())
+		os.Exit(1)
+	}
+
+	slog.Info("Starting maintenance-scheduler",
+		"version", version,
+		"period", period,
+		"metricsHost", metricsHost,
+		"metricsPort", metricsPort,
+		"debug", debug,
+
+		"cmPrefix", cmPrefix,
+		"knownMaintenanceWindows", len(windows),
+	)
+
+	// we take a stance here: if you reload your cm, don't touch conditions, leave them as is, until we have completely reloaded
+	// This will be easier than having to deal with:
+	// - race conditions between n controllers and exchange all data that needs deleting/adding
+	// - stopping already running jobs
+	slog.Info("Any change in a watched maintenance window (configmap) WILL result in a restart of this pod, regardless of maintenance progress")
+
+	mw := maintenances.NewWindows(windows...)
+	// Maintenance window schedule is ALWAYS active, regardless or not the manager is the leader or the follower
+	// It makes it easy for a leader election of the node controller to have all the information about the maintenances.
+	// This is why we reboot the whole controller on a cm change.
+	c := cron.New(cron.WithLogger(cronLogger), cron.WithChain(cron.SkipIfStillRunning(cronLogger)))
+	for _, window := range mw.AllWindows {
+		logger.Debug("Loading maintenance window into cron", "window", window.Name, "schedule", window.Schedule)
+		if _, err := c.AddFunc(window.Schedule, mw.Run(window.Name, logger)); err != nil {
+			slog.Error("Failed to load maintenance windows into cron", "error", err.Error())
+			os.Exit(1)
+		}
+	}
+	c.Start()
+	// Only to look good in linting, as we crash stuff with os.Exit in controllers :)
+	defer c.Stop()
 
 	metricsBindAddress := metricsHost + ":" + strconv.Itoa(metricsPort)
 	setupLog.Info("Setting up manager")
-	mgr, errNewManager := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, errNewManager := ctrl.NewManager(config, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress:   metricsBindAddress,
@@ -94,12 +145,32 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("Setting up controller")
+	setupLog.Info("Setting up node controller")
 	if err := (&controllers.MaintenanceSchedulerNodeReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:                    mgr.GetClient(),
+		Scheme:                    mgr.GetScheme(),
+		MaintenanceWindows:        mw,
+		ConditionHeartbeatPeriod:  period,
+		Logger:                    logger,
+		RequiredConditionTypes:    []string{conditions.RebootRequiredConditionType, conditions.UnderMaintenanceConditionType},
+		ForbiddenConditionTypes:   []string{conditions.InhibitedRebootConditionType},
+		MaximumNodesInMaintenance: concurrency,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", controllers.MaintenanceWindowControllerName)
+		setupLog.Error(err, "unable to create controller", "controller", controllers.MaintenanceWindowNodeControllerName)
+		os.Exit(1)
+	}
+
+	setupLog.Info("Setting up cm controller")
+	if err := (&controllers.MaintenanceSchedulerCMReconciler{
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		Logger:              logger,
+		ConfigMapNamespaces: cmNamespace,
+		ConfigMapPrefix:     cmPrefix,
+		ConfigMapLabelKey:   cmLabelKey,
+		MaintenanceWindows:  mw,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", controllers.MaintenanceWindowCMControllerName)
 		os.Exit(1)
 	}
 
@@ -116,69 +187,11 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
 
-	///////////////// OLD CONTROLLER LOGIC
-	//
-	//// Core initialisation, error 1 on failure.
-	//client := cli.KubernetesClientSetOrDie("", kubeconfig)
-	//windows, parsingError := maintenances.FetchConfigmaps(ctx, client, cmNamespace, cmPrefix)
-	//if parsingError != nil {
-	//	slog.Error("failed to parse a maintenance window", "error", parsingError.Error())
-	//	os.Exit(1)
-	//}
-	//
-	//slog.Info("Starting maintenance-scheduler",
-	//	"version", version,
-	//	"period", period,
-	//	"metricsHost", metricsHost,
-	//	"metricsPort", metricsPort,
-	//	"debug", debug,
-	//
-	//	"cmPrefix", cmPrefix,
-	//	"knownMaintenanceWindows", len(windows),
-	//)
-	//
-	//// Todo, update the controller to dynamically reload windows without restart by watching cms
-	//// delete of the cm would delete the attached cronjobs
-	//// modification would delete and add the cronjobs
-	//// addition would add the cronjobs
-	//slog.Info("You must reload this deployment in case of new or updated maintenance window(s)")
-	//
-	//mw := maintenances.NewWindows(windows)
-	//
-	//// Maintenance manager setup
-	//c := cronlib.New(cronlib.WithLogger(cronLogger), cronlib.WithChain(cronlib.SkipIfStillRunning(cronLogger)))
-	//for _, window := range mw.AllWindows {
-	//	logger.Debug("Loading maintenance window into cron", "window", window.Name, "schedule", window.Schedule)
-	//	if _, err := c.AddFunc(window.Schedule, mw.Run(window.Name, logger)); err != nil {
-	//		slog.Error("Failed to load maintenance windows into cron", "error", err.Error())
-	//		os.Exit(1)
-	//	}
-	//}
-	//c.Start()
-	////
-	////// Controller handling node events to guarantee the placement of nodes into maintenance if they belong to an active window
-	////kubeInformerFactory := informers.NewSharedInformerFactory(client, period)
-	////controller := NewController(logger, client,
-	////	kubeInformerFactory.Core().V1().Nodes(),
-	////	mw,
-	////	concurrency,
-	////	period,
-	////)
-	////
-	////// The Start method is non-blocking and runs all registered informers in a dedicated goroutine.
-	////kubeInformerFactory.Start(ctx.Done())
-	////
-	////go func() {
-	////	if err := controller.Run(ctx, 2); err != nil {
-	////		os.Exit(1)
-	////	}
-	////}()
-	//
 	//// Closes on Ctrl-C
 	////http.Handle("/metrics", promhttp.Handler())
 	////if err := http.ListenAndServe(fmt.Sprintf("%s:%d", metricsHost, metricsPort), nil); err != nil {
