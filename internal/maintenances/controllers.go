@@ -1,4 +1,4 @@
-package controllers
+package maintenances
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/kubereboot/kured/internal/conditions"
-	"github.com/kubereboot/kured/internal/maintenances"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,7 +30,7 @@ const (
 type MaintenanceSchedulerNodeReconciler struct {
 	client.Client
 	Scheme                    *runtime.Scheme
-	MaintenanceWindows        *maintenances.Windows
+	MaintenanceWindows        *Windows
 	ConditionHeartbeatPeriod  time.Duration
 	Logger                    *slog.Logger
 	RequiredConditionTypes    []string
@@ -60,7 +59,7 @@ func (r *MaintenanceSchedulerNodeReconciler) Reconcile(ctx context.Context, req 
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	maintenances.NodesInProgressGauge.WithLabelValues(node.GetName()).Set(map[bool]float64{true: 1.0, false: 0.0}[MIPCondition.Status == corev1.ConditionTrue])
+	NodesInProgressGauge.WithLabelValues(node.GetName()).Set(map[bool]float64{true: 1.0, false: 0.0}[MIPCondition.Status == corev1.ConditionTrue])
 
 	var conditionsToApply []corev1.NodeCondition
 	conditionsToApply = append(conditionsToApply, MWCondition, MIPCondition)
@@ -214,7 +213,7 @@ func (r *MaintenanceSchedulerNodeReconciler) reconcileConditions(ctx context.Con
 			r.Logger.Error("failed to update node condition", "node", node.Name)
 			return ctrl.Result{}, err
 		}
-		r.Logger.Debug("node condition updated", "node", node.Name, "patch", patch)
+		r.Logger.Debug("node condition updated", "node", node.Name)
 	}
 	return ctrl.Result{}, nil
 }
@@ -227,7 +226,7 @@ type MaintenanceSchedulerCMReconciler struct {
 	ConfigMapNamespaces string
 	ConfigMapPrefix     string
 	ConfigMapLabelKey   string
-	MaintenanceWindows  *maintenances.Windows
+	MaintenanceWindows  *Windows
 }
 
 // Reconcile is a big word. In this case, I simply want to reload the whole process, as this is very invasive.
@@ -245,7 +244,7 @@ func (r *MaintenanceSchedulerCMReconciler) Reconcile(ctx context.Context, req ct
 		}
 		return ctrl.Result{}, err
 	}
-	if reconciledWindow, err := maintenances.NewWindowFromConfigMap(req.Name, cm.Data); err != nil || reconciledWindow == nil {
+	if reconciledWindow, err := NewWindowFromConfigMap(req.Name, cm.Data); err != nil || reconciledWindow == nil {
 		return ctrl.Result{}, err
 	} else {
 		if knownWindow, ok := r.MaintenanceWindows.AllWindows[req.Name]; !ok || knownWindow.Checksum() != reconciledWindow.Checksum() {

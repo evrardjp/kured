@@ -9,9 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/kubereboot/kured/internal/checkers"
 	"github.com/kubereboot/kured/internal/cli"
-	"github.com/prometheus/client_golang/prometheus"
+	"github.com/kubereboot/kured/internal/detectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	flag "github.com/spf13/pflag"
 )
@@ -19,18 +18,6 @@ import (
 var (
 	version = "unreleased"
 )
-
-var (
-	rebootRequiredGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Subsystem: "kured",
-		Name:      "reboot_required",
-		Help:      "OS requires reboot due to software updates.",
-	}, []string{"node"})
-)
-
-func init() {
-	prometheus.MustRegister(rebootRequiredGauge)
-}
 
 func main() {
 	var (
@@ -89,13 +76,19 @@ func main() {
 	)
 
 	// TODO: Add distribution-based defaulting for rebootSentinelCommand and rebootSentinelFile
-	rebootChecker, err := checkers.NewRebootChecker(rebootSentinelCommand, rebootSentinelFile)
+	rebootChecker, err := detectors.NewRebootChecker(rebootSentinelCommand, rebootSentinelFile)
 	if err != nil {
 		slog.Error(fmt.Sprintf("unrecoverable error - failed to build reboot checker: %v", err))
 		os.Exit(4)
 	}
 
-	go maintainRebootRequiredCondition(ctx, client, nodeID, period, rebootChecker)
+	controllerConfig := &detectors.Config{
+		Period:         period,
+		RebootDetector: rebootChecker,
+		NodeID:         nodeID,
+		Client:         client,
+	}
+	go detectors.MaintainRebootRequiredCondition(ctx, controllerConfig)
 
 	http.Handle("/metrics", promhttp.Handler())
 	if err := http.ListenAndServe(fmt.Sprintf("%s:%d", metricsHost, metricsPort), nil); err != nil {
