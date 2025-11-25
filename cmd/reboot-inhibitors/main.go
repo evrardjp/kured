@@ -2,14 +2,13 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/kubereboot/kured/internal/cli"
-	papi "github.com/prometheus/client_golang/api"
+	"github.com/kubereboot/kured/internal/inhibitors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	flag "github.com/spf13/pflag"
 )
@@ -60,20 +59,13 @@ func main() {
 
 	client := cli.KubernetesClientSetOrDie("", kubeconfig)
 
-	// Core initialisation, error 1 on failure
-	promClient, err := papi.NewClient(papi.Config{Address: prometheusURL})
-	if err != nil {
-		slog.Info("Failed to create Prometheus client", "error", err.Error())
-		os.Exit(1)
-	}
-
 	slog.Info("Starting Kubernetes Reboot Inhibitor",
 		"version", version,
 		"period", period,
 		"metricsHost", metricsHost,
 		"metricsPort", metricsPort,
 		"debug", debug,
-		
+
 		"alertFilter", alertFilter.String(),
 		"alertFiringOnly", alertFiringOnly,
 		"alertFilterMatchOnly", alertFilterMatchOnly,
@@ -81,7 +73,25 @@ func main() {
 	)
 
 	ticker := time.NewTicker(period)
-	go InhibitorsWatchLoop(ctx, ticker, blockingPodSelectors, client, prometheusURL, promClient, alertFilter.Regexp, alertFiringOnly, alertFilterMatchOnly, period)
+
+	config, errConfig := inhibitors.NewControllerConfig(
+		ticker,
+		client,
+		logger,
+		blockingPodSelectors,
+		prometheusURL,
+		alertFilter.Regexp,
+		alertFiringOnly,
+		alertFilterMatchOnly,
+		period,
+	)
+	if errConfig != nil {
+		slog.Error("Failed to create controller config", "error", errConfig)
+		os.Exit(1)
+	}
+	go inhibitors.MaintainCondition(ctx, config)
 	http.Handle("/metrics", promhttp.Handler())
-	log.Fatal(http.ListenAndServe(fmt.Sprintf("%s:%d", metricsHost, metricsPort), nil)) // #nosec G114
+	if err := http.ListenAndServe(fmt.Sprintf("%s:%d", metricsHost, metricsPort), nil); err != nil { // #nosec G114
+		os.Exit(2)
+	}
 }

@@ -12,14 +12,36 @@ import (
 	"github.com/prometheus/common/model"
 )
 
-// FindAlerts returns a list of active alerts' names (e.g. pending or firing)
+type PrometheusInhibitor struct {
+	PromClient           papi.Client
+	PrometheusURL        string
+	AlertFilter          *regexp.Regexp
+	AlertFiringOnly      bool
+	AlertFilterMatchOnly bool
+}
+
+// Check queries Prometheus for active alerts, and sets the inhibitedNodes accordingly
+// it assumes the caller has already verified that PrometheusURL is non-empty
+func (pi *PrometheusInhibitor) Check(ctx context.Context, inhibitedNodes *InhibitedNodeSet) error {
+	matchingAlerts, errProm := findAlerts(ctx, pi.PromClient, pi.AlertFilter, pi.AlertFiringOnly, pi.AlertFilterMatchOnly)
+	if errProm != nil {
+		inhibitedNodes.SetDefaults(true, "an error querying prometheus results in blocking all reboots for now")
+		return fmt.Errorf("blocking all reboots for now due to an error querrying prom %w", errProm)
+	}
+	if matchingAlerts != nil && len(matchingAlerts) != 0 {
+		inhibitedNodes.SetDefaults(true, "reboot-inhibitor detected an alert in prometheus")
+	}
+	return nil
+}
+
+// findAlerts returns a list of active alerts' names (e.g. pending or firing)
 // alertFiringOnly is a bool to indicate if only firing alerts should be considered
 // alertFilterMatchOnly is a bool to indicate that we are only blocking on alerts which match the filter
-func FindAlerts(client papi.Client, alertFilter *regexp.Regexp, alertFiringOnly, alertFilterMatchOnly bool) ([]string, error) {
+func findAlerts(ctx context.Context, client papi.Client, alertFilter *regexp.Regexp, alertFiringOnly, alertFilterMatchOnly bool) ([]string, error) {
 	api := promapiv1.NewAPI(client)
 
 	// get all alerts from prometheus
-	value, _, err := api.Query(context.Background(), "ALERTS", time.Now())
+	value, _, err := api.Query(ctx, "ALERTS", time.Now())
 	if err != nil {
 		return nil, err
 	}

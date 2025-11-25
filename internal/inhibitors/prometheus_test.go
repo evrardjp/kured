@@ -1,6 +1,7 @@
 package inhibitors
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -168,7 +169,7 @@ func TestActiveAlerts(t *testing.T) {
 			regex, _ := regexp.Compile(tc.rFilter)
 
 			// instantiate the prometheus client with the mockserver-address
-			result, _ := FindAlerts(client, regex, tc.firingOnly, tc.filterMatchOnly)
+			result, _ := findAlerts(context.Background(), client, regex, tc.firingOnly, tc.filterMatchOnly)
 			//fmt.Println(result)
 
 			// assert

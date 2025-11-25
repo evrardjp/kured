@@ -11,7 +11,6 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/kubereboot/kured/internal/cli"
 	"github.com/kubereboot/kured/internal/conditions"
-	"github.com/kubereboot/kured/internal/controllers"
 	"github.com/kubereboot/kured/internal/maintenances"
 	"github.com/robfig/cron/v3"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -146,7 +145,7 @@ func main() {
 	}
 
 	setupLog.Info("Setting up node controller")
-	if err := (&controllers.MaintenanceSchedulerNodeReconciler{
+	if err := (&maintenances.MaintenanceSchedulerNodeReconciler{
 		Client:                    mgr.GetClient(),
 		Scheme:                    mgr.GetScheme(),
 		MaintenanceWindows:        mw,
@@ -156,12 +155,12 @@ func main() {
 		ForbiddenConditionTypes:   []string{conditions.InhibitedRebootConditionType},
 		MaximumNodesInMaintenance: concurrency,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", controllers.MaintenanceWindowNodeControllerName)
+		setupLog.Error(err, "unable to create controller", "controller", maintenances.MaintenanceWindowNodeControllerName)
 		os.Exit(1)
 	}
 
 	setupLog.Info("Setting up cm controller")
-	if err := (&controllers.MaintenanceSchedulerCMReconciler{
+	if err := (&maintenances.MaintenanceSchedulerCMReconciler{
 		Client:              mgr.GetClient(),
 		Scheme:              mgr.GetScheme(),
 		Logger:              logger,
@@ -170,7 +169,7 @@ func main() {
 		ConfigMapLabelKey:   cmLabelKey,
 		MaintenanceWindows:  mw,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", controllers.MaintenanceWindowCMControllerName)
+		setupLog.Error(err, "unable to create controller", "controller", maintenances.MaintenanceWindowCMControllerName)
 		os.Exit(1)
 	}
 

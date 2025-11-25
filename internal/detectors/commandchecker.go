@@ -1,7 +1,8 @@
-package checkers
+package detectors
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,11 +12,11 @@ import (
 	"github.com/google/shlex"
 )
 
-// CommandChecker is using a custom command to check
+// Command is using a custom command to check
 // if a reboot is required. There are two modes of behaviour,
 // if Privileged is granted, the NamespacePid is used to nsenter
 // the given PID's namespace.
-type CommandChecker struct {
+type Command struct {
 	CheckCommand []string
 	NamespacePid int
 	Privileged   bool
@@ -23,10 +24,10 @@ type CommandChecker struct {
 
 var exitFunc = os.Exit
 
-// RebootRequired for CommandChecker runs a command without returning
+// Check for Command runs a command without returning
 // any eventual error. This should be later refactored to return the errors,
 // instead of logging and fataling them here.
-func (rc CommandChecker) RebootRequired() bool {
+func (rc Command) Check() bool {
 	bufStdout := new(bytes.Buffer)
 	bufStderr := new(bytes.Buffer)
 	// #nosec G204 -- CheckCommand is controlled and validated internally
@@ -35,8 +36,9 @@ func (rc CommandChecker) RebootRequired() bool {
 	cmd.Stderr = bufStderr
 
 	if err := cmd.Run(); err != nil {
-		switch err := err.(type) {
-		case *exec.ExitError:
+		var errCmd *exec.ExitError
+		switch {
+		case errors.As(err, &errCmd):
 			// We assume a non-zero exit code means 'reboot not required', but of course
 			// the user could have misconfigured the sentinel command or something else
 			// went wrong during its execution. In that case, not entering a reboot loop
@@ -64,7 +66,7 @@ func (rc CommandChecker) RebootRequired() bool {
 // This relies on hostPID:true and privileged:true to enter host mount space
 // For info, rancher based need different pid, which should be user given.
 // until we have a better discovery mechanism.
-func NewCommandChecker(sentinelCommand string, pid int, privileged bool) (*CommandChecker, error) {
+func NewCommandChecker(sentinelCommand string, pid int, privileged bool) (*Command, error) {
 	var cmd []string
 	if privileged {
 		cmd = append(cmd, "/usr/bin/nsenter", fmt.Sprintf("-m/proc/%d/ns/mnt", pid), "--")
@@ -74,7 +76,7 @@ func NewCommandChecker(sentinelCommand string, pid int, privileged bool) (*Comma
 		return nil, fmt.Errorf("error parsing provided sentinel command: %v", err)
 	}
 	cmd = append(cmd, parsedCommand...)
-	return &CommandChecker{
+	return &Command{
 		CheckCommand: cmd,
 		NamespacePid: pid,
 		Privileged:   privileged,

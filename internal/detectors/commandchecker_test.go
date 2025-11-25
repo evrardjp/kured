@@ -1,4 +1,4 @@
-package checkers
+package detectors
 
 import (
 	"reflect"
@@ -78,9 +78,9 @@ func Test_rebootRequired(t *testing.T) {
 			//// Reset exitFunc after the test
 			//defer func() { exitFunc = os.Exit }
 
-			a := CommandChecker{CheckCommand: tt.args.sentinelCommand, NamespacePid: 1, Privileged: false}
+			a := Command{CheckCommand: tt.args.sentinelCommand, NamespacePid: 1, Privileged: false}
 
-			if got := a.RebootRequired(); got != tt.want {
+			if got := a.Check(); got != tt.want {
 				t.Errorf("rebootRequired() = %v, want %v", got, tt.want)
 			}
 			if tt.fatals != fatal {
