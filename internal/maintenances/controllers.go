@@ -14,11 +14,10 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 const (
@@ -183,7 +182,7 @@ func (r *MaintenanceSchedulerNodeReconciler) checkConcurrencyLimit(ctx context.C
 			nodesInMaintenance = append(nodesInMaintenance, n.Name)
 		}
 	}
-	r.Logger.Debug(fmt.Sprintf("%d nodes in maintenance", len(nodesInMaintenance)), "nodesInMaintenance", nodesInMaintenance)
+	r.Logger.Debug(fmt.Sprintf("%d nodes currently in maintenance", len(nodesInMaintenance)), "nodesInMaintenance", nodesInMaintenance)
 	if len(nodesInMaintenance) >= r.MaximumNodesInMaintenance && !slices.Contains(nodesInMaintenance, node.Name) {
 		return false, corev1.NodeCondition{
 			Message:            fmt.Sprintf("%d nodes currently in maintenance reached", len(nodesInMaintenance)),
@@ -257,37 +256,54 @@ func (r *MaintenanceSchedulerCMReconciler) Reconcile(ctx context.Context, req ct
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MaintenanceSchedulerCMReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		Watches(
-			&corev1.ConfigMap{},
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-				if obj.GetNamespace() != r.ConfigMapNamespaces {
-					return []reconcile.Request{}
-				}
-				if _, ok := obj.GetLabels()[r.ConfigMapLabelKey]; ok {
-					// If the label is present and set to "true", trigger reconciliation for BackupBusybox
-					return []reconcile.Request{
-						{
-							NamespacedName: types.NamespacedName{
-								Name:      obj.GetName(),
-								Namespace: obj.GetNamespace(),
-							},
-						},
-					}
-				}
-				if strings.HasPrefix(obj.GetName(), r.ConfigMapPrefix) {
-					return []reconcile.Request{
-						{
-							NamespacedName: types.NamespacedName{
-								Name:      obj.GetName(),
-								Namespace: obj.GetNamespace(),
-							},
-						},
-					}
-				}
-				// Neither label nor cm name matches expectations, ignoring.
-				return []reconcile.Request{}
-			}),
-		).Named(MaintenanceWindowCMControllerName).
-		Complete(r)
+	match := func(obj client.Object) bool {
+		if obj == nil {
+			return false
+		}
+		// namespace filter (manager cache already can restrict namespaces)
+		if r.ConfigMapNamespaces != "" && obj.GetNamespace() != r.ConfigMapNamespaces {
+			return false
+		}
+		labels := obj.GetLabels()
+		if labels != nil {
+			if _, found := labels[r.ConfigMapLabelKey]; found {
+				return true
+			}
+		}
+		if r.ConfigMapPrefix != "" && strings.HasPrefix(obj.GetName(), r.ConfigMapPrefix) {
+			return true
+		}
+		return false
+	}
+	predicates := predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			cm, ok := e.Object.(*corev1.ConfigMap)
+			if !ok || cm == nil {
+				return false
+			}
+			return match(cm)
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			cm, ok := e.ObjectNew.(*corev1.ConfigMap)
+			if !ok || cm == nil {
+				return false
+			}
+			return match(cm)
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			cm, ok := e.Object.(*corev1.ConfigMap)
+			if !ok || cm == nil {
+				return false
+			}
+			return match(cm)
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			cm, ok := e.Object.(*corev1.ConfigMap)
+			if !ok || cm == nil {
+				return false
+			}
+			return match(cm)
+		},
+	}
+	return ctrl.NewControllerManagedBy(mgr).For(&corev1.ConfigMap{}).WithEventFilter(predicates).Complete(r)
 }

@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+const (
+	// SigRTMinPlus5 is the signal number for SIGRTMIN+5
+	SigRTMinPlus5 = 39
+)
+
 // SignalRebooter holds context-information for a signal reboot.
 type SignalRebooter struct {
 	Signal int
