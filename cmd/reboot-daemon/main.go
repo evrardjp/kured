@@ -5,73 +5,38 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"log/slog"
-	"net/http"
 	"os"
+	"strconv"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/kubereboot/kured/internal/cli"
 	"github.com/kubereboot/kured/internal/reboot"
 	"github.com/kubereboot/kured/internal/taints"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	flag "github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/informers"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/klog/v2"
 	kubectldrain "k8s.io/kubectl/pkg/drain"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 var (
 	version = "unreleased"
-
-	// Command line flags (sorted alphabetically)
-	alertFilter             cli.RegexpValue
-	alertFilterMatchOnly    bool
-	alertFiringOnly         bool
-	annotateNodeProgress    bool
-	concurrency             int
-	dsName                  string
-	dsNamespace             string
-	lockAnnotation          string
-	lockReleaseDelay        time.Duration
-	lockTTL                 time.Duration
-	messageTemplateDrain    string
-	messageTemplateReboot   string
-	messageTemplateUncordon string
-	notifyURLs              []string
-	podSelectors            []string
-	postRebootNodeLabels    []string
-	preRebootNodeLabels     []string
-	prometheusURL           string
-	rebootDays              []string
-	rebootEnd               string
-	rebootSentinelCommand   string
-	rebootSentinelFile      string
-	rebootStart             string
-	timezone                string
-	forceReboot             bool
-
-	rebootBlockedCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Subsystem: "kured",
-		Name:      "reboot_blocked_reason",
-		Help:      "Reboot required was blocked by event.",
-	}, []string{"node", "reason"})
+	scheme  = runtime.NewScheme()
 )
 
 const (
-	// KuredNodeLockAnnotation is the canonical string value for the kured node-lock annotation
-	KuredNodeLockAnnotation string = "kured.dev/kured-node-lock"
-	// KuredRebootInProgressAnnotation is the canonical string value for the kured reboot-in-progress annotation
-	KuredRebootInProgressAnnotation string = "kured.dev/kured-reboot-in-progress"
-	// KuredMostRecentRebootNeededAnnotation is the canonical string value for the kured most-recent-reboot-needed annotation
-	KuredMostRecentRebootNeededAnnotation string = "kured.dev/kured-most-recent-reboot-needed"
-	// TODO: Replace this with runtime evaluation
-	sigRTMinPlus5 = 34 + 5
+	binaryName = "kured"
 )
 
 func init() {
-	prometheus.MustRegister(rebootBlockedCounter)
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 }
 
 func main() {
@@ -87,9 +52,11 @@ func main() {
 		logFormat                            string
 		metricsHost                          string
 		metricsPort                          int
+		namespace                            string
 		nodeID                               string
 		period                               time.Duration
 		preferNoScheduleTaintName            string
+		probeBindAddress                     string
 		rebootCommand                        string
 		rebootDelay                          time.Duration
 		rebootMethod                         string
@@ -104,42 +71,17 @@ func main() {
 	flag.DurationVar(&drainTimeout, "drain-timeout", 0, "timeout after which the drain is aborted (default: 0, infinite time)")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional kubeconfig")
 	flag.StringVar(&logFormat, "log-format", "json", "use text or json log format")
+	flag.StringVar(&metricsHost, "metrics-host", "", "host where metrics will listen")
+	flag.IntVar(&metricsPort, "metrics-port", 8080, "port number where metrics will listen")
+	flag.StringVar(&namespace, "leader-election-namespace", "kube-system", "Namespace for leader election lock")
 	flag.StringVar(&nodeID, "node-id", "", "node name on which this controller runs, should be passed down from spec.nodeName via KURED_NODE_ID environment variable")
 	flag.DurationVar(&period, "period", time.Minute, "period is the controller resync period to ensure the node conditions are correctly read and a reboot is triggered")
 	flag.StringVar(&preferNoScheduleTaintName, "prefer-no-schedule-taint", "", "Taint name applied during pending node reboot (to prevent receiving additional pods from other rebooting nodes). Disabled by default. Set e.g. to \"kured.dev/kured-node-reboot\" to enable tainting.")
+	flag.StringVar(&probeBindAddress, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.StringVar(&rebootCommand, "reboot-command", "/bin/systemctl reboot", "command to run when a reboot is required")
 	flag.DurationVar(&rebootDelay, "reboot-delay", 0, "delay reboot for this duration (default: 0, disabled)")
 	flag.StringVar(&rebootMethod, "reboot-method", "signal", "method to use for reboots. Available: command, signal")
-	flag.IntVar(&rebootSignal, "reboot-signal", sigRTMinPlus5, "signal to use for reboot, SIGRTMIN+5 by default.")
-	flag.StringVar(&metricsHost, "metrics-host", "", "host where metrics will listen")
-	flag.IntVar(&metricsPort, "metrics-port", 8080, "port number where metrics will listen")
-
-	//flag.BoolVar(&alertFilterMatchOnly, "alert-filter-match-only", false, "Only block if the alert-filter-regexp matches active alerts")
-	//flag.BoolVar(&alertFiringOnly, "alert-firing-only", false, "only consider firing alerts when checking for active alerts")
-	//flag.BoolVar(&annotateNodeProgress, "annotate-nodes", false, "if set, the annotations 'kured.dev/kured-reboot-in-progress' and 'kured.dev/kured-most-recent-reboot-needed' will be given to nodes undergoing kured reboots")
-	//flag.BoolVar(&forceReboot, "force-reboot", false, "force a reboot even if the drain fails or times out")
-	//flag.DurationVar(&lockReleaseDelay, "lock-release-delay", 0, "delay lock release for this duration (default: 0, disabled)")
-	//flag.DurationVar(&lockTTL, "lock-ttl", 0, "expire lock annotation after this duration (default: 0, disabled)")
-	//flag.IntVar(&concurrency, "concurrency", 1, "amount of nodes to concurrently reboot. Defaults to 1")
-	//flag.IntVar(&drainGracePeriod, "drain-grace-period", -1, "time in seconds given to each pod to terminate gracefully, if negative, the default value specified in the pod will be used")
-	//flag.StringArrayVar(&notifyURLs, "notify-url", nil, "notify URL for reboot notifications (can be repeated for multiple notifications)")
-	//flag.StringArrayVar(&podSelectors, "blocking-pod-selector", nil, "label selector identifying pods whose presence should prevent reboots")
-	//flag.StringSliceVar(&postRebootNodeLabels, "post-reboot-node-labels", nil, "labels to add to nodes after uncordoning")
-	//flag.StringSliceVar(&preRebootNodeLabels, "pre-reboot-node-labels", nil, "labels to add to nodes before cordoning")
-	//flag.StringSliceVar(&rebootDays, "reboot-days", timewindow.EveryDay, "schedule reboot on these days")
-	//flag.StringVar(&dsName, "ds-name", "kured", "name of daemonset on which to place lock")
-	//flag.StringVar(&dsNamespace, "ds-namespace", "kube-system", "namespace containing daemonset on which to place lock")
-	//flag.StringVar(&lockAnnotation, "lock-annotation", KuredNodeLockAnnotation, "annotation in which to record locking node")
-	//flag.StringVar(&messageTemplateDrain, "message-template-drain", "Draining node %s", "message template used to notify about a node being drained")
-	//flag.StringVar(&messageTemplateReboot, "message-template-reboot", "Rebooting node %s", "message template used to notify about a node being rebooted")
-	//flag.StringVar(&messageTemplateUncordon, "message-template-uncordon", "Node %s rebooted & uncordoned successfully!", "message template used to notify about a node being successfully uncordoned")
-	//flag.StringVar(&prometheusURL, "prometheus-url", "", "Prometheus instance to probe for active alerts")
-	//flag.StringVar(&rebootEnd, "end-time", "23:59:59", "schedule reboot only before this time of day")
-	//flag.StringVar(&rebootSentinelCommand, "reboot-sentinel-command", "", "command for which a zero return code will trigger a reboot command")
-	//flag.StringVar(&rebootSentinelFile, "reboot-sentinel", "/var/run/reboot-required", "path to file whose existence triggers the reboot command")
-	//flag.StringVar(&rebootStart, "start-time", "0:00", "schedule reboot only after this time of day")
-	//flag.StringVar(&timezone, "time-zone", "UTC", "use this timezone for schedule inputs")
-	//flag.Var(&alertFilter, "alert-filter-regexp", "alert names to ignore when checking for active alerts")
+	flag.IntVar(&rebootSignal, "reboot-signal", reboot.SigRTMinPlus5, "signal to use for reboot, SIGRTMIN+5 by default.")
 
 	flag.Parse()
 
@@ -150,8 +92,10 @@ func main() {
 	ctx := cli.SetupSignalHandler()
 
 	logger := cli.NewLogger(debug, logFormat)
-	// For all the old calls using logger
-	slog.SetDefault(logger)
+	slog.SetDefault(logger)                                // for generic log.logger
+	ctrl.SetLogger(logr.FromSlogHandler(logger.Handler())) // for controller-runtime's logger
+	setupLog := ctrl.Log.WithName(binaryName)              // for controller-runtime logger
+	klog.SetLogger(logr.FromSlogHandler(logger.Handler())) // for client-go's tool loggers (appears in leader election)
 
 	client := cli.KubernetesClientSetOrDie("", kubeconfig)
 
@@ -173,15 +117,24 @@ func main() {
 		"taint", fmt.Sprintf("preferNoSchedule taint: (%s)", preferNoScheduleTaintName),
 	)
 
-	rebooter, err := reboot.NewRebooter(rebootMethod, rebootCommand, rebootSignal, rebootDelay, true, 1)
-	if err != nil {
-		slog.Error(fmt.Sprintf("unrecoverable error - failed to construct system rebooter: %v", err))
+	metricsBindAddress := metricsHost + ":" + strconv.Itoa(metricsPort)
+
+	rebooterConfig := &reboot.Config{
+		Method:     rebootMethod,
+		Command:    rebootCommand,
+		Signal:     rebootSignal,
+		Delay:      rebootDelay,
+		Privileged: true,
+		PID:        1,
+	}
+
+	rebooter, errRebooter := rebooterConfig.NewRebooter()
+	if errRebooter != nil {
+		slog.Error(fmt.Sprintf("unrecoverable error - failed to construct system rebooter: %v", errRebooter))
 		os.Exit(3)
 	}
 
-	kubeInformerFactory := informers.NewSharedInformerFactory(client, period)
-
-	helper := &kubectldrain.Helper{
+	drainHelper := &kubectldrain.Helper{
 		Client:                          client,
 		Ctx:                             ctx,
 		Force:                           true,
@@ -197,26 +150,41 @@ func main() {
 
 	preferNoScheduleTaint := taints.New(client, nodeID, preferNoScheduleTaintName, corev1.TaintEffectPreferNoSchedule)
 
-	controller := NewController(logger, client,
-		kubeInformerFactory.Core().V1().Nodes(),
-		period,
-		nodeID,
-		rebooter,
-		drainDelay,
-		helper,
-		preferNoScheduleTaint,
-	)
+	mgr, errNewManager := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		Scheme: scheme,
+		Metrics: metricsserver.Options{
+			BindAddress:   metricsBindAddress,
+			SecureServing: false,
+		},
+		HealthProbeBindAddress: probeBindAddress,
+		LeaderElection:         false,
+	})
+	if errNewManager != nil {
+		setupLog.Error(errNewManager, "unable to start manager")
+		os.Exit(1)
+	}
 
-	// The Start method is non-blocking and runs all registered informers in a dedicated goroutine.
-	kubeInformerFactory.Start(ctx.Done())
+	setupLog.Info("Setting up kured controller")
+	c := reboot.NewController(logger, mgr, nodeID, rebooter, period, drainDelay, preferNoScheduleTaint, drainHelper)
+	if err := c.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "kured")
+		os.Exit(1)
+	}
 
-	go func() {
-		if err := controller.Run(ctx, 1); err != nil {
-			slog.Error(fmt.Sprintf("error running controller: %v", err))
-			os.Exit(1)
-		}
-	}()
+	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		setupLog.Error(err, "unable to set up health check")
+		os.Exit(1)
+	}
 
-	http.Handle("/metrics", promhttp.Handler())
-	log.Fatal(http.ListenAndServe(fmt.Sprintf("%s:%d", metricsHost, metricsPort), nil)) // #nosec G114
+	// Useless ready check for now
+	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		setupLog.Error(err, "unable to set up ready check")
+		os.Exit(1)
+	}
+
+	setupLog.Info("starting manager")
+	if err := mgr.Start(ctx); err != nil {
+		setupLog.Error(err, "problem running manager")
+		os.Exit(1)
+	}
 }

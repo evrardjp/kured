@@ -19,6 +19,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -126,6 +127,46 @@ func main() {
 	// Only to look good in linting, as we crash stuff with os.Exit in controllers :)
 	defer c.Stop()
 
+	// Need a separate manager, because we only want to watch on namespace
+	cmMgr, errNewCMManager := ctrl.NewManager(config, ctrl.Options{
+		Scheme: scheme,
+		Cache: cache.Options{
+			DefaultNamespaces: map[string]cache.Config{
+				cmNamespace: {},
+			},
+		},
+		LeaderElection: false,
+		Metrics: metricsserver.Options{
+			BindAddress: "0",
+		},
+	})
+	if errNewCMManager != nil {
+		setupLog.Error(errNewCMManager, "unable to start manager")
+		os.Exit(1)
+	}
+
+	setupLog.Info("Setting up cm controller")
+	if err := (&maintenances.MaintenanceSchedulerCMReconciler{
+		Client:              cmMgr.GetClient(),
+		Scheme:              cmMgr.GetScheme(),
+		Logger:              logger,
+		ConfigMapNamespaces: cmNamespace,
+		ConfigMapPrefix:     cmPrefix,
+		ConfigMapLabelKey:   cmLabelKey,
+		MaintenanceWindows:  mw,
+	}).SetupWithManager(cmMgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", maintenances.MaintenanceWindowCMControllerName)
+		os.Exit(1)
+	}
+
+	go func() {
+		setupLog.Info("starting cm manager")
+		if err := cmMgr.Start(ctx); err != nil {
+			setupLog.Error(err, "problem running manager")
+			os.Exit(1)
+		}
+	}()
+
 	metricsBindAddress := metricsHost + ":" + strconv.Itoa(metricsPort)
 	setupLog.Info("Setting up manager")
 	mgr, errNewManager := ctrl.NewManager(config, ctrl.Options{
@@ -159,20 +200,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("Setting up cm controller")
-	if err := (&maintenances.MaintenanceSchedulerCMReconciler{
-		Client:              mgr.GetClient(),
-		Scheme:              mgr.GetScheme(),
-		Logger:              logger,
-		ConfigMapNamespaces: cmNamespace,
-		ConfigMapPrefix:     cmPrefix,
-		ConfigMapLabelKey:   cmLabelKey,
-		MaintenanceWindows:  mw,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", maintenances.MaintenanceWindowCMControllerName)
-		os.Exit(1)
-	}
-
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
@@ -185,7 +212,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
+	setupLog.Info("starting node manager")
 	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)

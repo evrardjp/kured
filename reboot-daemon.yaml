@@ -23,7 +23,7 @@ rules:
     verbs:     ["create"]
   - apiGroups: ["apps"]
     resources: ["daemonsets"]
-    verbs: ["get", "list", "update"]
+    verbs: ["get", "list"] # update was used but i am not sure we still need it for drain, let's try without it.
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["list"]

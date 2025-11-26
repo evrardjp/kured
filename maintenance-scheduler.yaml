@@ -15,7 +15,37 @@ metadata:
 rules:
   - apiGroups: [ "" ]
     resources: [ "configmaps" ] # for maintenances
-    verbs: [ "get", "list" ]
+    verbs: [ "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: "kured:maintenance-reader"
+  # This needs to map the cm's namespace to read the maintenances from
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: "kured:maintenance-reader"
+subjects:
+  - kind: ServiceAccount
+    name: maintenance-scheduler
+    # this needs to map where maintenance-scheduler is installed
+    namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "kured:maintenance-scheduler"
+  # This needs to map the namespace where leases will be created
+  namespace: kube-system
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -26,7 +56,7 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: "kured:maintenance-reader"
+  name: "kured:maintenance-scheduler"
 subjects:
   - kind: ServiceAccount
     name: maintenance-scheduler
@@ -69,7 +99,7 @@ metadata:
     app.kubernetes.io/component: reporter
     app.kubernetes.io/part-of: kured
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: maintenance-scheduler
@@ -85,6 +115,8 @@ spec:
         - key: node-role.kubernetes.io/control-plane
           effect: NoSchedule
       restartPolicy: Always
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
       containers:
         - name: maintenance-scheduler
           image: ghcr.io/kubereboot/maintenance-scheduler:dev

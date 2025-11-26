@@ -4,17 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/kubereboot/kured/internal/conditions"
-	"github.com/kubereboot/kured/internal/labels"
 	"github.com/kubereboot/kured/internal/reboot"
 	"github.com/kubereboot/kured/internal/taints"
 	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -203,99 +200,99 @@ func (c *Controller) processNextItem(ctx context.Context) bool {
 	c.lastProcessedTime = time.Now()
 	c.processingMutex.Unlock()
 
-	if err := c.rebootAsRequired(ctx, objRef); err != nil {
-		c.logger.Error("error syncing node, queuing object again", "objRef", objRef, "error", err.Error())
-		c.workQueue.AddRateLimited(objRef)
-		return true
-	}
+	//if err := c.rebootAsRequired(ctx, objRef); err != nil {
+	//	c.logger.Error("error syncing node, queuing object again", "objRef", objRef, "error", err.Error())
+	//	c.workQueue.AddRateLimited(objRef)
+	//	return true
+	//}
 
 	c.workQueue.Forget(objRef)
 	return true
 }
 
 // rebootAsRequired processes any node changes and handles the reboot process.
-func (c *Controller) rebootAsRequired(ctx context.Context, objectRef cache.ObjectName) error {
-	//
-	node, err := c.nodeLister.Get(objectRef.Name)
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("failed to get node %q: %w", objectRef, err)
-	}
-
-	if node == nil {
-		return fmt.Errorf("failed to get object %s from nodeLister", objectRef.Name)
-	}
-
-	inProgressCondition := conditions.GetNodeCondition(node.Status.Conditions, conditions.MaintenanceInProgressConditionType)
-	if inProgressCondition == nil {
-		c.logger.Debug("required condition is absent on the node %s", objectRef.Name)
-		return nil
-	}
-	rebootDesired := inProgressCondition.Status == corev1.ConditionTrue
-	c.logger.Debug("node condition info", "node", node.Name, "conditionType", conditions.MaintenanceInProgressConditionType, "conditionStatus", rebootDesired, "lastHeartbeatTime", inProgressCondition.LastHeartbeatTime.Time)
-
-	clientSet := c.client.(*kubernetes.Clientset)
-
-	c.logger.Info("Handling preferNoSchedule taint (if requested)", "node", c.nodeName, "desiredTaintState", map[bool]string{true: "present", false: "absent"}[rebootDesired])
-	// Apply/Remove a taint as soon as we enter/leave maintenance
-	c.preferNoScheduleTaint.SetState(rebootDesired)
-
-	// Labels use case would generally come here. https://github.com/kubereboot/kured/issues/509
-	// Yet it's not implemented ON PURPOSE. Why?
-	// Because we do not need to fix the world problems anymore:
-	// First, the WG node lifecycle is trying to standardize around conditions to inform maintenances
-	// Second, even if we do not have a label set by this process, we can still set a label by another controller, based on conditions.
-	// In both cases, there is 0 reason to do it here, as it can be done in a different channel.
-
-	// Apply/Remove annotation before we Evict/after we return the node as active (removed the taint)
-	previouslyUnschedulable := node.Spec.Unschedulable
-	if previouslyUnschedulableAnnotation, ok := node.Annotations[labels.KuredNodeWasUnschedulableBeforeDrainAnnotation]; !ok {
-		// No annotation might be fine. Do we need to reboot? Then we need to save Unschedulable spec in annotation.
-		if rebootDesired {
-			annotations := map[string]string{labels.KuredNodeWasUnschedulableBeforeDrainAnnotation: strconv.FormatBool(node.Spec.Unschedulable)}
-			c.logger.Info(fmt.Sprintf("adding annotation %s", labels.KuredNodeWasUnschedulableBeforeDrainAnnotation), "node", c.nodeName)
-			err := labels.AddNodeAnnotations(clientSet, c.nodeName, annotations)
-			if err != nil {
-				return fmt.Errorf("error saving state of the node %s, %v", c.nodeName, err)
-			}
-		}
-	} else {
-		// Annotation is present. Restore its content into memory.
-		// Never update it here. If an error occurred later in the process, we always want to read the declared user state.
-		previouslyUnschedulable, err = strconv.ParseBool(previouslyUnschedulableAnnotation)
-		if err != nil {
-			// It's worth not continuing, we do not know if we need to uncordon or not.
-			// We can resume later or after the user has fixed the annotation. Until then, don't touch.
-			return fmt.Errorf("error recovering state of the node %s, %v", c.nodeName, err)
-		}
-	}
-	// if rebootDesired, then cordon (regardless of previous state)
-	// if reboot not desired anymore, then uncordon UNLESS the previous state was already cordonned/unschedulable
-	if rebootDesired || !previouslyUnschedulable {
-		if errCordon := kubectldrain.RunCordonOrUncordon(c.drainHelper, node, rebootDesired); errCordon != nil {
-			return fmt.Errorf("cordonning node %s failed: %w", c.nodeName, errCordon)
-		}
-	}
-
-	if rebootDesired {
-		c.logger.Info("Draining node", "node", c.nodeName)
-		if errDrain := kubectldrain.RunNodeDrain(c.drainHelper, c.nodeName); errDrain != nil {
-			return fmt.Errorf("error draining node %s: %v", c.nodeName, errDrain)
-		}
-	} else {
-		c.logger.Info("Ensuring absent maintenance annotation", "node", c.nodeName)
-		if errDelAnnotation := labels.DeleteNodeAnnotation(clientSet, c.nodeName, labels.KuredNodeWasUnschedulableBeforeDrainAnnotation); errDelAnnotation != nil {
-			return fmt.Errorf("error cleaning annotation containing previous Unschedulable state of the node %s, %v", c.nodeName, errDelAnnotation)
-		}
-	}
-
-	if rebootDesired {
-		c.logger.Info("Rebooting node", "node", c.nodeName)
-		if errR := c.rebooter.Reboot(); errR != nil {
-			return fmt.Errorf("error rebooting node %s: %w", c.nodeName, errR)
-		}
-	}
-	return nil
-}
+//func (c *Controller) rebootAsRequired(ctx context.Context, objectRef cache.ObjectName) error {
+//	//
+//	node, err := c.nodeLister.Get(objectRef.Name)
+//	if err != nil {
+//		if k8serrors.IsNotFound(err) {
+//			return nil
+//		}
+//		return fmt.Errorf("failed to get node %q: %w", objectRef, err)
+//	}
+//
+//	if node == nil {
+//		return fmt.Errorf("failed to get object %s from nodeLister", objectRef.Name)
+//	}
+//
+//	inProgressCondition := conditions.GetNodeCondition(node.Status.Conditions, conditions.MaintenanceInProgressConditionType)
+//	if inProgressCondition == nil {
+//		c.logger.Debug("required condition is absent on the node %s", objectRef.Name)
+//		return nil
+//	}
+//	rebootDesired := inProgressCondition.Status == corev1.ConditionTrue
+//	c.logger.Debug("node condition info", "node", node.Name, "conditionType", conditions.MaintenanceInProgressConditionType, "conditionStatus", rebootDesired, "lastHeartbeatTime", inProgressCondition.LastHeartbeatTime.Time)
+//
+//	clientSet := c.client.(*kubernetes.Clientset)
+//
+//	c.logger.Info("Handling preferNoSchedule taint (if requested)", "node", c.nodeName, "desiredTaintState", map[bool]string{true: "present", false: "absent"}[rebootDesired])
+//	// Apply/Remove a taint as soon as we enter/leave maintenance
+//	c.preferNoScheduleTaint.SetState(rebootDesired)
+//
+//	// Labels use case would generally come here. https://github.com/kubereboot/kured/issues/509
+//	// Yet it's not implemented ON PURPOSE. Why?
+//	// Because we do not need to fix the world problems anymore:
+//	// First, the WG node lifecycle is trying to standardize around conditions to inform maintenances
+//	// Second, even if we do not have a label set by this process, we can still set a label by another controller, based on conditions.
+//	// In both cases, there is 0 reason to do it here, as it can be done in a different channel.
+//
+//	// Apply/Remove annotation before we Evict/after we return the node as active (removed the taint)
+//	previouslyUnschedulable := node.Spec.Unschedulable
+//	if previouslyUnschedulableAnnotation, ok := node.Annotations[labels.KuredNodeWasUnschedulableBeforeDrainAnnotation]; !ok {
+//		// No annotation might be fine. Do we need to reboot? Then we need to save Unschedulable spec in annotation.
+//		if rebootDesired {
+//			annotations := map[string]string{labels.KuredNodeWasUnschedulableBeforeDrainAnnotation: strconv.FormatBool(node.Spec.Unschedulable)}
+//			c.logger.Info(fmt.Sprintf("adding annotation %s", labels.KuredNodeWasUnschedulableBeforeDrainAnnotation), "node", c.nodeName)
+//			err := labels.AddNodeAnnotations(clientSet, c.nodeName, annotations)
+//			if err != nil {
+//				return fmt.Errorf("error saving state of the node %s, %v", c.nodeName, err)
+//			}
+//		}
+//	} else {
+//		// Annotation is present. Restore its content into memory.
+//		// Never update it here. If an error occurred later in the process, we always want to read the declared user state.
+//		previouslyUnschedulable, err = strconv.ParseBool(previouslyUnschedulableAnnotation)
+//		if err != nil {
+//			// It's worth not continuing, we do not know if we need to uncordon or not.
+//			// We can resume later or after the user has fixed the annotation. Until then, don't touch.
+//			return fmt.Errorf("error recovering state of the node %s, %v", c.nodeName, err)
+//		}
+//	}
+//	// if rebootDesired, then cordon (regardless of previous state)
+//	// if reboot not desired anymore, then uncordon UNLESS the previous state was already cordonned/unschedulable
+//	if rebootDesired || !previouslyUnschedulable {
+//		if errCordon := kubectldrain.RunCordonOrUncordon(c.drainHelper, node, rebootDesired); errCordon != nil {
+//			return fmt.Errorf("cordonning node %s failed: %w", c.nodeName, errCordon)
+//		}
+//	}
+//
+//	if rebootDesired {
+//		c.logger.Info("Draining node", "node", c.nodeName)
+//		if errDrain := kubectldrain.RunNodeDrain(c.drainHelper, c.nodeName); errDrain != nil {
+//			return fmt.Errorf("error draining node %s: %v", c.nodeName, errDrain)
+//		}
+//	} else {
+//		c.logger.Info("Ensuring absent maintenance annotation", "node", c.nodeName)
+//		if errDelAnnotation := labels.DeleteNodeAnnotation(clientSet, c.nodeName, labels.KuredNodeWasUnschedulableBeforeDrainAnnotation); errDelAnnotation != nil {
+//			return fmt.Errorf("error cleaning annotation containing previous Unschedulable state of the node %s, %v", c.nodeName, errDelAnnotation)
+//		}
+//	}
+//
+//	if rebootDesired {
+//		c.logger.Info("Rebooting node", "node", c.nodeName)
+//		if errR := c.rebooter.Reboot(); errR != nil {
+//			return fmt.Errorf("error rebooting node %s: %w", c.nodeName, errR)
+//		}
+//	}
+//	return nil
+//}
