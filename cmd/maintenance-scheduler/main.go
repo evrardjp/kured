@@ -1,3 +1,4 @@
+// Package main implements the maintenance-scheduler controller for Kured.
 package main
 
 import (
@@ -33,8 +34,8 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	metrics.Registry.Register(maintenances.ActiveWindowsGauge)
-	metrics.Registry.Register(maintenances.NodesInProgressGauge)
+	utilruntime.Must(metrics.Registry.Register(maintenances.ActiveWindowsGauge))
+	utilruntime.Must(metrics.Registry.Register(maintenances.NodesInProgressGauge))
 }
 
 func main() {
@@ -127,7 +128,7 @@ func main() {
 	// Only to look good in linting, as we crash stuff with os.Exit in controllers :)
 	defer c.Stop()
 
-	// Need a separate manager, because we only want to watch on namespace
+	// Need a separate manager for cm so that we can only watch on the relevant namespace and reduce access rights.
 	cmMgr, errNewCMManager := ctrl.NewManager(config, ctrl.Options{
 		Scheme: scheme,
 		Cache: cache.Options{

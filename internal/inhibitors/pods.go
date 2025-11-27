@@ -11,6 +11,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// PodInhibitor checks for the presence of pods matching specified label selectors
+// If any such pods are found on a node, that node is marked as inhibited
 type PodInhibitor struct {
 	BlockingPodSelectors []string
 	Client               *kubernetes.Clientset
@@ -23,11 +25,10 @@ func (pb *PodInhibitor) Check(ctx context.Context, inhibitedNodes *InhibitedNode
 	if errPods != nil {
 		inhibitedNodes.SetDefaults(true, "reboot-inhibitor had an error finding protected pods")
 		return fmt.Errorf("error finding inhibitor pods: %w", errPods)
-	} else {
-		if len(protectedNodes) != 0 {
-			slog.Info(fmt.Sprintf("found inhibitor pods matching %s on %s", pb.BlockingPodSelectors, slices.Sorted(maps.Keys(protectedNodes))))
-			inhibitedNodes.AddBatch(protectedNodes, "reboot-inhibitor found inhibitor pod")
-		}
+	}
+	if len(protectedNodes) != 0 {
+		slog.Info(fmt.Sprintf("found inhibitor pods matching %s on %s", pb.BlockingPodSelectors, slices.Sorted(maps.Keys(protectedNodes))))
+		inhibitedNodes.AddBatch(protectedNodes, "reboot-inhibitor found inhibitor pod")
 	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// Config holds the configuration for the Rebooter
 type Config struct {
 	Method     string
 	Command    string

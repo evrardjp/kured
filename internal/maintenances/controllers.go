@@ -1,3 +1,5 @@
+// Package maintenances contains the controllers for managing maintenance windows and node maintenance conditions.
+// It is the brain of the maintenance windows management.
 package maintenances
 
 import (
@@ -21,8 +23,10 @@ import (
 )
 
 const (
+	// MaintenanceWindowNodeControllerName is the name of the controller managing node maintenance windows
 	MaintenanceWindowNodeControllerName = "maintenance-scheduler-node"
-	MaintenanceWindowCMControllerName   = "maintenance-scheduler-cm"
+	// MaintenanceWindowCMControllerName is the name of the controller managing config maps for maintenance windows
+	MaintenanceWindowCMControllerName = "maintenance-scheduler-cm"
 )
 
 // MaintenanceSchedulerNodeReconciler reconciles a Node object for all the maintenances windows conditions
@@ -62,7 +66,6 @@ func (r *MaintenanceSchedulerNodeReconciler) Reconcile(ctx context.Context, req 
 
 	var conditionsToApply []corev1.NodeCondition
 	conditionsToApply = append(conditionsToApply, MWCondition, MIPCondition)
-	conditionsToApply = append(conditionsToApply, MWCondition)
 
 	return r.reconcileConditions(ctx, &node, conditionsToApply)
 }
@@ -105,12 +108,12 @@ func (r *MaintenanceSchedulerNodeReconciler) prepareMIPCondition(ctx context.Con
 		return unmetRequirementCondition, nil
 	}
 
-	if canEnterMaintenance, cannotEnterCondition, err := r.checkConcurrencyLimit(ctx, node); err != nil {
-		return corev1.NodeCondition{}, err
-	} else {
-		if !canEnterMaintenance {
-			return cannotEnterCondition, nil
-		}
+	canEnterMaintenance, cannotEnterCondition, errConcurrency := r.checkConcurrencyLimit(ctx, node)
+	if errConcurrency != nil {
+		return corev1.NodeCondition{}, errConcurrency
+	}
+	if !canEnterMaintenance {
+		return cannotEnterCondition, nil
 	}
 
 	return corev1.NodeCondition{
@@ -217,11 +220,13 @@ func (r *MaintenanceSchedulerNodeReconciler) reconcileConditions(ctx context.Con
 	return ctrl.Result{}, nil
 }
 
+// MaintenanceSchedulerCMReconciler reconciles ConfigMap objects.
+// It is a way to ensure stability of the maintenance windows defined via ConfigMaps.
+// See also Reconcile method for more details.
 type MaintenanceSchedulerCMReconciler struct {
 	client.Client
 	Scheme              *runtime.Scheme
 	Logger              *slog.Logger
-	cmChecksums         map[string]string
 	ConfigMapNamespaces string
 	ConfigMapPrefix     string
 	ConfigMapLabelKey   string
@@ -243,18 +248,21 @@ func (r *MaintenanceSchedulerCMReconciler) Reconcile(ctx context.Context, req ct
 		}
 		return ctrl.Result{}, err
 	}
-	if reconciledWindow, err := NewWindowFromConfigMap(req.Name, cm.Data); err != nil || reconciledWindow == nil {
-		return ctrl.Result{}, err
-	} else {
-		if knownWindow, ok := r.MaintenanceWindows.AllWindows[req.Name]; !ok || knownWindow.Checksum() != reconciledWindow.Checksum() {
-			r.Logger.Warn("Rebooting controller due to the addition or edition of configmap", "cmName", req.Name, "cmNamespace", req.Namespace)
-			os.Exit(666)
-		}
+	reconciledWindow, errWindowFCM := NewWindowFromConfigMap(req.Name, cm.Data)
+	if errWindowFCM != nil || reconciledWindow == nil {
+		return ctrl.Result{}, errWindowFCM
+	}
+	if knownWindow, ok := r.MaintenanceWindows.AllWindows[req.Name]; !ok || knownWindow.Checksum() != reconciledWindow.Checksum() {
+		r.Logger.Warn("Rebooting controller due to the addition or edition of configmap", "cmName", req.Name, "cmNamespace", req.Namespace)
+		os.Exit(666)
 	}
 	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
+// This relies on two tricks:
+// - using predicates to filter only the config maps we care about
+// - only watching the right namespaces in the manager itself (to avoid extra load on the controller)
 func (r *MaintenanceSchedulerCMReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	match := func(obj client.Object) bool {
 		if obj == nil {

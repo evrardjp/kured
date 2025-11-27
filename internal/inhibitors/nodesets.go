@@ -2,11 +2,18 @@ package inhibitors
 
 import "sync"
 
+// NodeSet is a set of node names
 type NodeSet map[string]struct{}
 
+// NodeName represents the name of a node
 type NodeName string
+
+// BlockMessage represents the message associated with a blocked node
 type BlockMessage string
 
+// InhibitedNodeSet manages a set of nodes that are inhibited from rebooting
+// It allows adding/removing nodes and checking their inhibited status
+// It also supports a default inhibiting state and message for all nodes
 type InhibitedNodeSet struct {
 	//blockedNodes contains the nodeNames (as keys) for which a dedicated inhibitor message was created
 	blockedNodes map[NodeName]BlockMessage
@@ -16,6 +23,7 @@ type InhibitedNodeSet struct {
 	defaultInhibitingMessage BlockMessage
 }
 
+// NewNodeSet creates and returns a new InhibitedNodeSet instance
 func NewNodeSet() *InhibitedNodeSet {
 	return &InhibitedNodeSet{
 		blockedNodes:             make(map[NodeName]BlockMessage),
