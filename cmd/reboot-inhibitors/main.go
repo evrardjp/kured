@@ -1,3 +1,4 @@
+// Package main implements a Kubernetes reboot inhibitor that prevents node reboots
 package main
 
 import (
@@ -9,6 +10,7 @@ import (
 
 	"github.com/kubereboot/kured/internal/cli"
 	"github.com/kubereboot/kured/internal/inhibitors"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	flag "github.com/spf13/pflag"
 )
@@ -90,8 +92,23 @@ func main() {
 		os.Exit(1)
 	}
 	go inhibitors.MaintainCondition(ctx, config)
-	http.Handle("/metrics", promhttp.Handler())
-	if err := http.ListenAndServe(fmt.Sprintf("%s:%d", metricsHost, metricsPort), nil); err != nil { // #nosec G114
-		os.Exit(2)
+	// Use promhttp.Handler() with timeout configuration
+	handler := promhttp.InstrumentMetricHandler(
+		prometheus.DefaultRegisterer,
+		promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{
+			Timeout: 5 * time.Second,
+		}),
+	)
+
+	server := &http.Server{
+		Addr:         fmt.Sprintf("%s:%d", metricsHost, metricsPort),
+		Handler:      handler,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+
+	if err := server.ListenAndServe(); err != nil {
+		logger.Error("Failed to start metrics server", "error", err)
+		os.Exit(9)
 	}
 }

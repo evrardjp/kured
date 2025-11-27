@@ -17,15 +17,20 @@ func init() {
 type blockingReason string
 
 const (
-	ReasonDrainTimeout     blockingReason = "drain_timeout"
-	ReasonDrainFailed      blockingReason = "drain_failed"
-	ReasonCordonFailed     blockingReason = "cordon_failed"
-	ReasonAnnotationFailed blockingReason = "annotation_failed"
-	ReasonConditionAbsent  blockingReason = "condition_absent"
-	ReasonRebootFailed     blockingReason = "reboot_failed"
+	reasonDrainTimeout     blockingReason = "drain_timeout"
+	reasonDrainFailed      blockingReason = "drain_failed"
+	reasonCordonFailed     blockingReason = "cordon_failed"
+	reasonAnnotationFailed blockingReason = "annotation_failed"
+	reasonConditionAbsent  blockingReason = "condition_absent"
+	reasonRebootFailed     blockingReason = "reboot_failed"
 	//ReasonUnknown          blockingReason = "unknown"
 )
 
+// RecordReason increments the counter for the given node and blocking reason
+// This allows monitoring of events that prevent reboots from occurring
+// As multiple reconciles may occur for the same blocking event or multiple times during a time period,
+// this counter may increment multiple times. It's not the value that counts, but the fact there was an increase event.
+// This help tracks trends over time.
 func RecordReason(nodeName string, reason blockingReason) {
 	rebootBlockedCounter.WithLabelValues(nodeName, string(reason)).Inc()
 }

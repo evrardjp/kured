@@ -2,7 +2,7 @@ package maintenances
 
 import (
 	"context"
-	"crypto/md5"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// Window represents a maintenance window configuration.
 type Window struct {
 	Name         string
 	Duration     time.Duration
@@ -21,11 +22,16 @@ type Window struct {
 	Schedule     string
 }
 
-func (w *Window) Checksum() [16]byte {
+// Checksum computes a SHA-256 checksum of the window's configuration.
+// This can be used to detect changes in the configuration.
+// The checksum is computed over the Duration, NodeSelector, and Schedule fields.
+// While we do not need cryptographic hashing, we use SHA-256 for linting convenience.
+func (w *Window) Checksum() [32]byte {
 	data := strings.Join([]string{w.Duration.String(), w.NodeSelector.String(), w.Schedule}, "|")
-	return md5.Sum([]byte(data))
+	return sha256.Sum256([]byte(data))
 }
 
+// NewWindowFromConfigMap creates a Window from the given ConfigMap data.
 func NewWindowFromConfigMap(name string, d map[string]string) (*Window, error) {
 	if _, errCronParsing := cron.ParseStandard(d["startTime"]); errCronParsing != nil {
 		return nil, fmt.Errorf("failed to parse startTime: %w", errCronParsing)

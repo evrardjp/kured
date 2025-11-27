@@ -21,11 +21,12 @@ type Taint struct {
 	taintName string
 	effect    corev1.TaintEffect
 	exists    bool
+	context   context.Context
 }
 
 // New provides a new taint
-func New(client *kubernetes.Clientset, nodeID, taintName string, effect corev1.TaintEffect) *Taint {
-	exists, _, _ := taintExists(client, nodeID, taintName)
+func New(ctx context.Context, client *kubernetes.Clientset, nodeID, taintName string, effect corev1.TaintEffect) *Taint {
+	exists, _, _ := taintExists(ctx, client, nodeID, taintName)
 
 	return &Taint{
 		client:    client,
@@ -36,6 +37,7 @@ func New(client *kubernetes.Clientset, nodeID, taintName string, effect corev1.T
 	}
 }
 
+// SetState enables or disables the taint based on the enabled parameter.
 func (t *Taint) SetState(enabled bool) {
 	if enabled {
 		t.Enable()
@@ -54,7 +56,7 @@ func (t *Taint) Enable() {
 		return
 	}
 
-	preferNoSchedule(t.client, t.nodeID, t.taintName, t.effect, true)
+	preferNoSchedule(t.context, t.client, t.nodeID, t.taintName, t.effect, true)
 
 	t.exists = true
 }
@@ -69,13 +71,13 @@ func (t *Taint) Disable() {
 		return
 	}
 
-	preferNoSchedule(t.client, t.nodeID, t.taintName, t.effect, false)
+	preferNoSchedule(t.context, t.client, t.nodeID, t.taintName, t.effect, false)
 
 	t.exists = false
 }
 
-func taintExists(client *kubernetes.Clientset, nodeID, taintName string) (bool, int, *corev1.Node) {
-	updatedNode, err := client.CoreV1().Nodes().Get(context.TODO(), nodeID, metav1.GetOptions{})
+func taintExists(ctx context.Context, client *kubernetes.Clientset, nodeID, taintName string) (bool, int, *corev1.Node) {
+	updatedNode, err := client.CoreV1().Nodes().Get(ctx, nodeID, metav1.GetOptions{})
 	if err != nil || updatedNode == nil {
 		slog.Debug("Error reading node from API server", "node", nodeID, "error", err)
 		// TODO: Clarify with community if we need to exit
@@ -91,15 +93,15 @@ func taintExists(client *kubernetes.Clientset, nodeID, taintName string) (bool, 
 	return false, 0, updatedNode
 }
 
-func preferNoSchedule(client *kubernetes.Clientset, nodeID, taintName string, effect corev1.TaintEffect, shouldExists bool) {
-	taintExists, offset, updatedNode := taintExists(client, nodeID, taintName)
+func preferNoSchedule(ctx context.Context, client *kubernetes.Clientset, nodeID, taintName string, effect corev1.TaintEffect, shouldExist bool) {
+	taintExist, offset, updatedNode := taintExists(ctx, client, nodeID, taintName)
 
-	if taintExists && shouldExists {
+	if taintExist && shouldExist {
 		slog.Debug(fmt.Sprintf("Taint %v exists already for node %v.", taintName, nodeID), "node", nodeID)
 		return
 	}
 
-	if !taintExists && !shouldExists {
+	if !taintExist && !shouldExist {
 		slog.Debug(fmt.Sprintf("Taint %v already missing for node %v.", taintName, nodeID), "node", nodeID)
 		return
 	}
@@ -136,7 +138,7 @@ func preferNoSchedule(client *kubernetes.Clientset, nodeID, taintName string, ef
 				Value: taint,
 			},
 		}
-	} else if taintExists {
+	} else if taintExist {
 		// remove taint and ensure to test against race conditions
 		patches = []patchTaints{
 			{
@@ -167,14 +169,14 @@ func preferNoSchedule(client *kubernetes.Clientset, nodeID, taintName string, ef
 		os.Exit(10)
 	}
 
-	_, err = client.CoreV1().Nodes().Patch(context.TODO(), nodeID, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
+	_, err = client.CoreV1().Nodes().Patch(ctx, nodeID, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
 		// TODO: Clarify if we really need to exit with the community
 		slog.Debug(fmt.Sprintf("Error patching taint for node %s: %v", nodeID, err), "node", nodeID, "error", err)
 		os.Exit(10)
 	}
 
-	if shouldExists {
+	if shouldExist {
 		slog.Info("Node taint added", "node", nodeID)
 	} else {
 		slog.Info("Node taint removed", "node", nodeID)

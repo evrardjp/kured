@@ -18,6 +18,7 @@ type Windows struct {
 	AllWindows map[string]*Window
 }
 
+// NewWindows creates a new Windows based on given list of maintenance window instance.
 func NewWindows(windows ...*Window) *Windows {
 	w := &Windows{
 		activeSelectors: map[string]labels.Selector{},
@@ -30,6 +31,7 @@ func NewWindows(windows ...*Window) *Windows {
 	return w
 }
 
+// Add adds a new maintenance window to the collection.
 func (a *Windows) Add(window *Window) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -52,6 +54,7 @@ func (a *Windows) End(windowName string) {
 	ActiveWindowsGauge.WithLabelValues(windowName).Set(0)
 }
 
+// MatchesAnyActiveSelector checks if the given node labels match any of the active maintenance window selectors.
 func (a *Windows) MatchesAnyActiveSelector(nodeLabels map[string]string) (bool, string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -63,6 +66,7 @@ func (a *Windows) MatchesAnyActiveSelector(nodeLabels map[string]string) (bool, 
 	return false, ""
 }
 
+// String returns a string representation of the active maintenance windows.
 func (a *Windows) String() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -73,6 +77,7 @@ func (a *Windows) String() string {
 	return strings.Join(activeWindows, " | ")
 }
 
+// ListSelectors returns a string representation of the active maintenance window selectors.
 func (a *Windows) ListSelectors() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -83,6 +88,7 @@ func (a *Windows) ListSelectors() string {
 	return strings.Join(activeSelectors, " | ")
 }
 
+// Run starts the maintenance window for the specified duration and logs the start and end events.
 func (a *Windows) Run(windowName string, logger *slog.Logger) func() {
 	return func() {
 		logger.Info("Starting maintenance window", "window", windowName)

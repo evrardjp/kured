@@ -26,6 +26,7 @@ import (
 )
 
 const (
+	// ControllerName is the name of the controller actually rebooting nodes
 	ControllerName = "kured"
 )
 
@@ -96,7 +97,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// Get the MaintenanceInProgress condition
 	inProgressCondition := conditions.GetNodeCondition(node.Status.Conditions, conditions.MaintenanceInProgressConditionType)
 	if inProgressCondition == nil {
-		RecordReason(c.nodeName, ReasonConditionAbsent)
+		RecordReason(c.nodeName, reasonConditionAbsent)
 		c.logger.Debug("required condition is absent on the node", "node", node.Name)
 		return ctrl.Result{}, nil
 	}
@@ -122,7 +123,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			annotations := map[string]string{labels.KuredNodeWasUnschedulableBeforeDrainAnnotation: strconv.FormatBool(node.Spec.Unschedulable)}
 			c.logger.Info(fmt.Sprintf("adding annotation %s", labels.KuredNodeWasUnschedulableBeforeDrainAnnotation), "node", c.nodeName)
 			if err := nau.AddNodeAnnotations(ctx, annotations); err != nil {
-				RecordReason(c.nodeName, ReasonAnnotationFailed)
+				RecordReason(c.nodeName, reasonAnnotationFailed)
 				return ctrl.Result{}, fmt.Errorf("error saving state of the node %s, %v", c.nodeName, err)
 			}
 		}
@@ -132,7 +133,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		var err error
 		previouslyUnschedulable, err = strconv.ParseBool(previouslyUnschedulableAnnotation)
 		if err != nil {
-			RecordReason(c.nodeName, ReasonAnnotationFailed)
+			RecordReason(c.nodeName, reasonAnnotationFailed)
 			c.logger.Info("invalid annotation value", "node", c.nodeName, "annotation", labels.KuredNodeWasUnschedulableBeforeDrainAnnotation, "value", previouslyUnschedulableAnnotation)
 			// It's worth not continuing, we do not know if we need to uncordon or not.
 			// We can resume later or after the user has fixed the annotation. Until then, don't touch.
@@ -144,7 +145,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// if reboot not desired anymore, then uncordon UNLESS the previous state was already cordonned/unschedulable
 	if rebootDesired || !previouslyUnschedulable {
 		if errCordon := drain.RunCordonOrUncordon(c.drainHelper, node, rebootDesired); errCordon != nil {
-			RecordReason(c.nodeName, ReasonCordonFailed)
+			RecordReason(c.nodeName, reasonCordonFailed)
 			return ctrl.Result{}, fmt.Errorf("cordonning node %s failed: %w", c.nodeName, errCordon)
 		}
 	}
@@ -153,16 +154,16 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		c.logger.Info("Draining node", "node", c.nodeName)
 		if errDrain := drain.RunNodeDrain(c.drainHelper, c.nodeName); errDrain != nil {
 			if errors.Is(errDrain, context.DeadlineExceeded) {
-				RecordReason(c.nodeName, ReasonDrainTimeout)
+				RecordReason(c.nodeName, reasonDrainTimeout)
 			} else {
-				RecordReason(c.nodeName, ReasonDrainFailed)
+				RecordReason(c.nodeName, reasonDrainFailed)
 			}
 			return ctrl.Result{}, fmt.Errorf("error draining node %s: %v", c.nodeName, errDrain)
 		}
 	} else {
 		c.logger.Info("Ensuring absent maintenance annotation", "node", c.nodeName)
 		if err := nau.DeleteNodeAnnotation(ctx, labels.KuredNodeWasUnschedulableBeforeDrainAnnotation); err != nil {
-			RecordReason(c.nodeName, ReasonAnnotationFailed)
+			RecordReason(c.nodeName, reasonAnnotationFailed)
 			return ctrl.Result{}, fmt.Errorf("error cleaning annotation containing previous Unschedulable state of the node %s, %v", c.nodeName, err)
 		}
 	}
@@ -171,7 +172,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if rebootDesired {
 		c.logger.Info("Rebooting node", "node", c.nodeName)
 		if errR := c.rebooter.Reboot(); errR != nil {
-			RecordReason(c.nodeName, ReasonRebootFailed)
+			RecordReason(c.nodeName, reasonRebootFailed)
 			return ctrl.Result{}, fmt.Errorf("error rebooting node %s: %w", c.nodeName, errR)
 		}
 	}
@@ -232,11 +233,11 @@ func (c *Controller) SetupWithManager(mgr ctrl.Manager) error {
 			c.logger.Debug("processing node object (node created)")
 			return true
 		},
-		DeleteFunc: func(e event.DeleteEvent) bool {
+		DeleteFunc: func(_ event.DeleteEvent) bool {
 			// We don't need to handle delete events
 			return false
 		},
-		GenericFunc: func(e event.GenericEvent) bool {
+		GenericFunc: func(_ event.GenericEvent) bool {
 			return false
 		},
 	}

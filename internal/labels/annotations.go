@@ -1,3 +1,4 @@
+// Package labels provides utilities for managing Kubernetes node annotations.
 package labels
 
 import (
@@ -20,6 +21,8 @@ type NodeAnnotationUpdater struct {
 	nodeName string
 }
 
+// NewNodeAnnotationUpdater creates a new NodeAnnotationUpdater
+// which will operate on the specified node
 func NewNodeAnnotationUpdater(cl client.Client, nodeName string) *NodeAnnotationUpdater {
 	return &NodeAnnotationUpdater{
 		client:   cl,

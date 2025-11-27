@@ -1,4 +1,4 @@
-// The reboot-required-detector daemon periodically checks if a reboot is required.
+// Package main implements daemon periodically checking if a reboot is required.
 // It sets up node conditions that will eventually trigger node reboots.
 package main
 

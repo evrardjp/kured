@@ -12,6 +12,8 @@ import (
 	"github.com/prometheus/common/model"
 )
 
+// PrometheusInhibitor queries a Prometheus server for active alerts
+// It is a global inhibitor - if any matching alerts are found, all reboots are inhibited
 type PrometheusInhibitor struct {
 	PromClient           papi.Client
 	PrometheusURL        string
@@ -28,7 +30,7 @@ func (pi *PrometheusInhibitor) Check(ctx context.Context, inhibitedNodes *Inhibi
 		inhibitedNodes.SetDefaults(true, "an error querying prometheus results in blocking all reboots for now")
 		return fmt.Errorf("blocking all reboots for now due to an error querrying prom %w", errProm)
 	}
-	if matchingAlerts != nil && len(matchingAlerts) != 0 {
+	if len(matchingAlerts) != 0 {
 		inhibitedNodes.SetDefaults(true, "reboot-inhibitor detected an alert in prometheus")
 	}
 	return nil

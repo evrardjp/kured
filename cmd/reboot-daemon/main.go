@@ -148,7 +148,7 @@ func main() {
 		ErrOut:                          os.Stderr,
 	}
 
-	preferNoScheduleTaint := taints.New(client, nodeID, preferNoScheduleTaintName, corev1.TaintEffectPreferNoSchedule)
+	preferNoScheduleTaint := taints.New(ctx, client, nodeID, preferNoScheduleTaintName, corev1.TaintEffectPreferNoSchedule)
 
 	mgr, errNewManager := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
