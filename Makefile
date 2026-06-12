@@ -1,8 +1,8 @@
 .DEFAULT: all
 .PHONY: all clean install-tools dev-image release dev-manifest e2e-test minikube-publish test lint lint-docs
 
-DH_ORG ?= kubereboot
-IMAGE_NAME ?= $(DH_ORG)/kured
+REGISTRY ?= ghcr.io
+IMAGE_NAME ?= kubereboot/kured
 VERSION ?= $(shell git rev-parse --short HEAD)
 GORELEASER_CONFIG ?= .config/goreleaser.yaml
 GOLANGCI_CONFIG ?= .config/golangci.yaml
@@ -21,7 +21,7 @@ clean:
 	rm -rf ./dist ./.tmp/goreleaser
 
 release:
-	IMAGE_NAME="$(IMAGE_NAME)" goreleaser release --clean -f $(GORELEASER_CONFIG)
+	REGISTRY="$(REGISTRY)" IMAGE_NAME="$(IMAGE_NAME)" goreleaser release --clean -f $(GORELEASER_CONFIG)
 
 dev-image:
 	mkdir -p dist/docker/$(LOCAL_PLATFORM)
@@ -61,3 +61,7 @@ lint:
 lint-docs:
 	@echo "Running lychee"
 	mise x lychee@latest -- lychee --verbose --no-progress '*.md' '*.yaml' '*/*/*.go' --exclude-link-local
+
+lint-goreleaser:
+	@echo "Checking goreleaser"
+	goreleaser check
